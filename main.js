@@ -1,3 +1,4 @@
+"use strict";
 class Canvas {
 	constructor(id, width, height) {
 		this.element = document.getElementById(id);
@@ -57,25 +58,70 @@ class Canvas {
 	}
 }
 
-const canvas = new Canvas("renderer", 800, 600);
+const parseObj = (text) => {
+	const obj = { v: [], vt: [], vn: [], f: {} };
+	let group = undefined;
+	text.split('\n').forEach((line, lineNumber) => {
+		line = line.replace(/#.*$/, ""); // Comments.
+		if (line.length === 0) return;
+		const entry = line.trim().split(/\s+/);
+		const command = entry.shift()
+		switch (command) {
+			case "v": // Geometric vertices.
+			case "vn": // Vertex normals.
+			case "vt": // Texture vertices.
+				obj[command].push(entry.map((f) => parseFloat(f)));
+				break;
+			case "f": // Face.
+				obj.f[group].push(entry.map((t) => {
+					return t.split("/").map((i) => parseInt(i, 10));
+				}));
+				break;
+			case "g": // Group name.
+				group = entry.shift();
+				if (!group) {
+					throw new Error(`Missing group name at line ${lineNumber}`);
+				}
+				if (!obj.f[group]) {
+					obj.f[group] = [];
+				}
+			case "s": // Smoothing group.
+				break; // Ignored.
+			default:
+				throw new Error(`Unsupported or invalid command: '${command ?? ""}' at line ${lineNumber}`);
+		}
+	});
+	return obj;
+}
+
+const canvas = new Canvas("renderer", 1280, 720);
 canvas.clear([0,0,0,255]);
-const hw = canvas.width*0.5, hh = canvas.height*0.5;
-const dy = 150;
-const dx = Math.floor(dy*Math.sqrt(3/2)); // cos(30)
-const white = [255,255,255,255]
-canvas.triangle(
-	hw,      hh - dy,
-	hw - dx, hh + dy,
-	hw + dx, hh + dy,
-	white,
-)
-const ll = 250;
-canvas.line(hw, hh, hw+ll, hh,    white);
-canvas.line(hw, hh, hw+ll, hh+ll, white);
-canvas.line(hw, hh, hw,    hh+ll, white);
-canvas.line(hw, hh, hw-ll, hh+ll, white);
-canvas.line(hw, hh, hw-ll, hh,    white);
-canvas.line(hw, hh, hw-ll, hh-ll, white);
-canvas.line(hw, hh, hw,    hh-ll, white);
-canvas.line(hw, hh, hw+ll, hh-ll, white);
 canvas.present();
+
+fetch("/head.obj")
+.then((value) => value.text())
+.then((text) => parseObj(text))
+.then((obj) => {
+	canvas.clear([0,0,0,255]);
+	canvas.present();
+
+	const hw = canvas.width / 2;
+	const hh = canvas.height / 2;
+	const ss = 0.9*Math.min(hh, hw);
+	const white = [255,255,255,255];
+	const head = obj.f["head"];
+	for (let fi=0; fi<head.length; ++fi) {
+		const f = head[fi];
+		for (let vi=0; vi<f.length; ++vi) {
+			const v0 = obj.v[f[vi][0] - 1];
+			const v1 = obj.v[f[(vi+1)%3][0] - 1];
+			const x0 = Math.floor((hw + ss*v0[0]));
+			const y0 = Math.floor((hh - ss*v0[1]));
+			const x1 = Math.floor((hw + ss*v1[0]));
+			const y1 = Math.floor((hh - ss*v1[1]));
+			canvas.line(x0,y0, x1,y1, white);
+		}
+	}
+
+	canvas.present();
+});
