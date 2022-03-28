@@ -39,26 +39,21 @@ class Canvas {
 		this.image = this.context.getImageData(0, 0, this.width, this.height);
 	}
 	line(x0, y0, x1, y1, rgba) { // Bresenham's line algorithm.
-		const dx = Math.abs(x1 - x0);
-		const sx = x0 < x1 ? 1 : -1;
-		const dy = -Math.abs(y1 - y0);
-		const sy = y0 < y1 ? 1 : -1;
+		const dx =  Math.abs(x1 - x0), sx = Math.sign(x1 - x0);
+		const dy = -Math.abs(y1 - y0), sy = Math.sign(y1 - y0);
 		let error = dx + dy;
 		while (true) {
 			this.set(x0, y0, rgba);
 			if (x0 === x1 && y0 === y1) return;
 			const e2 = 2*error;
-			if (e2 >= dy) {
-				if (x0 === x1) return;
-				error += dy;
-				x0 += sx;
-			}
-			if (e2 <= dy) {
-				if (y0 === y1) return;
-				error += dx;
-				y0 += sy;
-			}
+			if (e2 >= dy) { error += dy; x0 += sx; }
+			if (e2 <= dy) { error += dx; y0 += sy; }
 		}
+	}
+	triangle(x0,y0, x1,y1, x2,y2, rgba) {
+		canvas.line(x0,y0, x1,y1, rgba);
+		canvas.line(x1,y1, x2,y2, rgba);
+		canvas.line(x2,y2, x0,y0, rgba);
 	}
 }
 
@@ -67,14 +62,20 @@ canvas.clear([0,0,0,255]);
 const hw = canvas.width*0.5, hh = canvas.height*0.5;
 const dy = 150;
 const dx = Math.floor(dy*Math.sqrt(3/2)); // cos(30)
-const x0 = hw;
-const y0 = hh - dy;
-const x1 = hw - dx;
-const y1 = hh + dy;
-const x2 = hw + dx;
-const y2 = hh + dy;
 const white = [255,255,255,255]
-canvas.line(x0,y0, x1,y1, white);
-canvas.line(x1,y1, x2,y2, white);
-canvas.line(x2,y2, x0,y0, white);
+canvas.triangle(
+	hw,      hh - dy,
+	hw - dx, hh + dy,
+	hw + dx, hh + dy,
+	white,
+)
+const ll = 250;
+canvas.line(hw, hh, hw+ll, hh,    white);
+canvas.line(hw, hh, hw+ll, hh+ll, white);
+canvas.line(hw, hh, hw,    hh+ll, white);
+canvas.line(hw, hh, hw-ll, hh+ll, white);
+canvas.line(hw, hh, hw-ll, hh,    white);
+canvas.line(hw, hh, hw-ll, hh-ll, white);
+canvas.line(hw, hh, hw,    hh-ll, white);
+canvas.line(hw, hh, hw+ll, hh-ll, white);
 canvas.present();
