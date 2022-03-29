@@ -1,4 +1,19 @@
 "use strict";
+const cross = (a, b) => {
+	return [
+		a[1]*b[2] - a[2]*b[1],
+		a[2]*b[0] - a[0]*b[2],
+		a[0]*b[1] - a[1]*b[0],
+	];
+};
+const barycentric = (pts, p) => {
+	const u = cross(
+		[ pts[2][0]-pts[0][0], pts[1][0]-pts[0][0], pts[0][0]-p[0] ],
+		[ pts[2][1]-pts[0][1], pts[1][1]-pts[0][1], pts[0][1]-p[1] ],
+	);
+	if (Math.abs(u[2] < 1)) return [-1,1,1];
+	return [ 1 - (u[0]+u[1])/u[2], u[1]/u[2], u[0]/u[2] ];
+};
 class Canvas {
 	constructor(id, width, height) {
 		this.element = document.getElementById(id);
@@ -61,6 +76,24 @@ class Canvas {
 		canvas.line(x1,y1, x2,y2, rgba);
 		canvas.line(x2,y2, x0,y0, rgba);
 	}
+	triangleRasterized(x0,y0, x1,y1, x2,y2, rgba) {
+		const min = [
+			Math.max(Math.min(x0, x1, x2), 0),
+			Math.max(Math.min(y0, y1, y2), 0),
+		];
+		const max = [
+			Math.min(Math.max(x0, x1, x2), this.width-1),
+			Math.min(Math.max(y0, y1, y2), this.height-1),
+		];
+		const pts = [[x0,y0],[x1,y1],[x2,y2]];
+		for (let y = min[1]; y <= max[1]; ++y) {
+			for (let x = min[0]; x <= max[0]; ++x) {
+				const bc = barycentric(pts, [x,y]);
+				if (bc[0] < 0 || bc[1] < 0 || bc[2] < 0) continue;
+				this.set(x, y, rgba);
+			}
+		}
+	}
 }
 
 const parseObj = (text) => {
@@ -79,7 +112,7 @@ const parseObj = (text) => {
 				break;
 			case "f": // Face.
 				obj.f[group].push(entry.map((t) => {
-					return t.split("/").map((i) => parseInt(i, 10));
+					return t.split("/").map((i) => parseInt(i, 10) - 1);
 				}));
 				break;
 			case "g": // Group name.
@@ -97,11 +130,41 @@ const parseObj = (text) => {
 		}
 	});
 	return obj;
-}
+};
 
 const canvas = new Canvas("renderer", 1280, 720);
 canvas.clear([127,127,127,255]);
 canvas.present();
+
+const mouse = [false, false, false];
+canvas.element.onmousedown = (evt) => {
+	mouse[evt.button] = true; evt.preventDefault();
+};
+canvas.element.onmouseup = (evt) => {
+	mouse[evt.button] = false; evt.preventDefault();
+};
+canvas.element.oncontextmenu = (evt) => evt.preventDefault();
+
+const animate = (chunk) =>  {
+	let lastT = performance.now();
+	let t = 0;
+	let avgDT = 0;
+	let frozen = false;
+	(function tick() {
+		const newT = performance.now();
+		if (frozen) {
+			const dt = newT - lastT
+			t += dt;
+			canvas.clear([0,0,0,255]);
+			chunk(t/1000);
+			avgDT = avgDT*0.9 + dt*0.1;
+			canvas.present(Math.floor(1000/avgDT));
+		}
+		frozen = !mouse[0];
+		lastT = newT;
+		requestAnimationFrame(tick);
+	})();
+};
 
 fetch("/head.obj")
 .then((value) => value.text())
@@ -113,35 +176,31 @@ fetch("/head.obj")
 	const hw = canvas.width / 2;
 	const hh = canvas.height / 2;
 	const sf = 0.9*Math.min(hh, hw);
-	const x0 = hw, y0 = hh;
+	const ox = hw, oy = hh;
 	const head = obj.f["head"];
-
-	let lastT = performance.now();
-	let avgDT = 0;
-	requestAnimationFrame(function animate() {
-		canvas.clear([0,0,0,255]);
-		const ang = Date.now()/1000*Math.PI / 2;
-		const cos = Math.cos(ang), sin = Math.sin(ang);
+	//const stroke = [255,255,255,255];
+	//const fill   = [127,127,127,255];
+	animate((t) => {
+		const cos = Math.cos(t), sin = Math.sin(t);
+		//const cos = 1, sin = 0;
 		for (let fi = 0; fi < head.length; ++fi) {
 			const f = head[fi];
-			for (let vi=0; vi < f.length; ++vi) {
-				const v0 = obj.v[f[ vi     ][0] - 1];
-				const v1 = obj.v[f[(vi+1)%3][0] - 1];
-				const cc = fi/head.length*255;
-				canvas.line(
-					Math.floor((x0 + sf*(v0[0]*cos + v0[2]*sin))),
-					Math.floor((y0 - sf*(v0[1]))),
-					Math.floor((x0 + sf*(v1[0]*cos + v1[2]*sin))),
-					Math.floor((y0 - sf*(v1[1]))),
-					[v0[1]*255, cc, 255-cc, 255],
-				);
+			const v0 = obj.v[f[0][0]];
+			const v1 = obj.v[f[1][0]];
+			const v2 = obj.v[f[2][0]];
+
+			const x0 = Math.round(ox + sf*(v0[0]*cos + v0[2]*sin));
+			const y0 = Math.round(oy - sf*v0[1]);
+			const x1 = Math.round(ox + sf*(v1[0]*cos + v1[2]*sin));
+			const y1 = Math.round(oy - sf*v1[1]);
+			const x2 = Math.round(ox + sf*(v2[0]*cos + v2[2]*sin));
+			const y2 = Math.round(oy - sf*v2[1]);
+
+			if (mouse[0]) {
+				canvas.triangleRasterized(x0,y0, x1,y1, x2,y2, [Math.random()*255, Math.random()*255, Math.random()*255, 255]);
+			} else {
+				canvas.triangle(x0,y0, x1,y1, x2,y2, [255,255,255,255]);
 			}
 		}
-		const t = performance.now();
-		avgDT = avgDT*0.9 + (t - lastT)*0.1;
-		lastT = t;
-		canvas.present(Math.floor(1000/avgDT));
-
-		requestAnimationFrame(animate);
-	})
+	});
 });
