@@ -73,20 +73,21 @@ class Canvas {
 		canvas.line(x2,y2, x0,y0, rgba);
 	}
 	triangleRasterized(x0,y0, x1,y1, x2,y2, rgba) {
-		const min = [
-			Math.max(Math.min(x0, x1, x2), 0),
-			Math.max(Math.min(y0, y1, y2), 0),
-		];
-		const max = [
-			Math.min(Math.max(x0, x1, x2), this.width-1),
-			Math.min(Math.max(y0, y1, y2), this.height-1),
-		];
-		const pts = [[x0,y0],[x1,y1],[x2,y2]];
-		for (let y = min[1]; y <= max[1]; ++y) {
-			for (let x = min[0]; x <= max[0]; ++x) {
-				const bc = barycentric(pts, [x,y]);
-				if (bc[0] < 0 || bc[1] < 0 || bc[2] < 0) continue;
-				this.set(x, y, rgba);
+		if (y0 === y1 && y0 === y2) return; // Degenerate.
+		if (y0 > y1) [x0, y0, x1, y1] = [x1, y1, x0, y0];
+		if (y0 > y2) [x0, y0, x2, y2] = [x2, y2, x0, y0];
+		if (y1 > y2) [x1, y1, x2, y2] = [x2, y2, x1, y1];
+		const totalHeight = y2 - y0;
+		for (let y = 0; y < totalHeight; ++y) {
+			const secondHalf = (y > y1 - y0) || (y1 === y0);
+			const segmentHeight = secondHalf ? y2 - y1 : y1 - y0;
+			const alpha = y / totalHeight;
+			const beta  = (y - (secondHalf ? y1 - y0 : 0)) / segmentHeight;
+			let ax = x0 + (x2 - x0)*alpha;
+			let bx = secondHalf ? x1 + (x2 - x1)*beta : x0 + (x1 - x0)*beta;
+			if (ax > bx) [ax, bx] = [bx, ax];
+			for (let x = ax; x <= bx; ++x) {
+				this.set(x, y0 + y, rgba);
 			}
 		}
 	}
@@ -160,6 +161,19 @@ const animate = (chunk) =>  {
 	})();
 };
 
+const xmur = (str) => {
+	let h = 1779033703 ^ str.length;
+	for (let i = 0; i < str.length; ++i) {
+		h = Math.imul(h ^ str.charCodeAt(i), 3432918353);
+		h = h << 13 | h >>> 19;
+	}
+	return () => {
+		h = Math.imul(h ^ (h >>> 16), 2246822507);
+		h = Math.imul(h ^ (h >>> 13), 3266489909);
+		return (h ^= h >>> 16) >>> 0;
+	};
+};
+
 fetch("/head.obj")
 .then((value) => value.text())
 .then((text) => parseObj(text))
@@ -174,6 +188,7 @@ fetch("/head.obj")
 	animate((t) => {
 		const cos = Math.cos(t), sin = Math.sin(t);
 		//const cos = 1, sin = 0;
+		const prng = xmur("head");
 		for (let fi = 0; fi < head.length; ++fi) {
 			const f = head[fi];
 			const v0 = obj.v[f[0][0]];
@@ -187,8 +202,8 @@ fetch("/head.obj")
 			const x2 = Math.round(ox + sf*(v2[0]*cos + v2[2]*sin));
 			const y2 = Math.round(oy - sf*v2[1]);
 
-			if (mouse[0]) {
-				canvas.triangleRasterized(x0,y0, x1,y1, x2,y2, [Math.random()*255, Math.random()*255, Math.random()*255, 255]);
+			if (!mouse[0]) {
+				canvas.triangleRasterized(x0,y0, x1,y1, x2,y2, [prng()&255, prng()&255, prng()&255, prng()&255]);
 			} else {
 				canvas.triangle(x0,y0, x1,y1, x2,y2, [255,255,255,255]);
 			}
