@@ -27,18 +27,21 @@ class Canvas {
 	};
 	set(x, y, rgba) {
 		const i = this._idx(x, y);
-		this.image.data[i]   = rgba[0];
-		this.image.data[i+1] = rgba[1];
-		this.image.data[i+2] = rgba[2];
-		this.image.data[i+3] = rgba[3];
+		const data = this.image.data;
+		data[i  ] = rgba[0];
+		data[i+1] = rgba[1];
+		data[i+2] = rgba[2];
+		data[i+3] = rgba[3];
+		//data.set(rgba, i); // Slower.
 	}
 	get(x, y) {
 		const i = this._idx(x, y);
+		const data = this.image.data
 		return [
-			this.image.data[i],
-			this.image.data[i+1],
-			this.image.data[i+2],
-			this.image.data[i+3],
+			data[i  ],
+			data[i+1],
+			data[i+2],
+			data[i+3],
 		];
 	}
 	present(fps) {
@@ -49,15 +52,8 @@ class Canvas {
 			this.context.fillText(`${fps} FPS`, 10, 35);
 		}
 	}
-	clear(rgba) {
-		if (!rgba) {
-			this.context.clearRect(0, 0, this.width, this.height);
-		} else {
-			const [r,g,b,a] = rgba;
-			this.context.fillStyle = `rgba(${r},${g},${b},${a/255})`;
-			this.context.fillRect(0, 0, this.width, this.height);
-		}
-		this.image = this.context.getImageData(0, 0, this.width, this.height);
+	clear() {
+		this.image.data.fill(0);
 	}
 	line(x0, y0, x1, y1, rgba) { // Bresenham's line algorithm.
 		const dx =  Math.abs(x1 - x0), sx = Math.sign(x1 - x0);
@@ -132,9 +128,7 @@ const parseObj = (text) => {
 	return obj;
 };
 
-const canvas = new Canvas("renderer", 1280, 720);
-canvas.clear([127,127,127,255]);
-canvas.present();
+const canvas = new Canvas("renderer", 720, 720);
 
 const mouse = [false, false, false];
 canvas.element.onmousedown = (evt) => {
@@ -149,18 +143,18 @@ const animate = (chunk) =>  {
 	let lastT = performance.now();
 	let t = 0;
 	let avgDT = 0;
-	let frozen = false;
+	let animating = false;
 	(function tick() {
 		const newT = performance.now();
-		if (frozen) {
+		if (animating) {
 			const dt = newT - lastT
 			t += dt;
-			canvas.clear([0,0,0,255]);
+			canvas.clear();
 			chunk(t/1000);
 			avgDT = avgDT*0.9 + dt*0.1;
 			canvas.present(Math.floor(1000/avgDT));
 		}
-		frozen = !mouse[0];
+		animating = !mouse[0];
 		lastT = newT;
 		requestAnimationFrame(tick);
 	})();
@@ -170,9 +164,6 @@ fetch("/head.obj")
 .then((value) => value.text())
 .then((text) => parseObj(text))
 .then((obj) => {
-	canvas.clear([0,0,0,255]);
-	canvas.present();
-
 	const hw = canvas.width / 2;
 	const hh = canvas.height / 2;
 	const sf = 0.9*Math.min(hh, hw);
