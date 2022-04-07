@@ -1,19 +1,34 @@
 "use strict";
-const cross = (a, b) => {
-	return [
-		a[1]*b[2] - a[2]*b[1],
-		a[2]*b[0] - a[0]*b[2],
-		a[0]*b[1] - a[1]*b[0],
-	];
-};
-const barycentric = (pts, p) => {
-	const u = cross(
-		[ pts[2][0]-pts[0][0], pts[1][0]-pts[0][0], pts[0][0]-p[0] ],
-		[ pts[2][1]-pts[0][1], pts[1][1]-pts[0][1], pts[0][1]-p[1] ],
-	);
-	if (Math.abs(u[2] < 1)) return [-1,1,1];
-	return [ 1 - (u[0]+u[1])/u[2], u[1]/u[2], u[0]/u[2] ];
-};
+class Vec3 extends Array {
+	len() {
+		return Math.sqrt(this[0]*this[0] + this[1]*this[1] + this[2]*this[2]);
+	}
+	static sub(a, b) {
+		return new Vec3(
+			a[0] - b[0],
+			a[1] - b[1],
+			a[2] - b[2],
+		);
+	}
+	static cross(a, b) {
+		return new Vec3(
+			a[1]*b[2] - a[2]*b[1],
+			a[2]*b[0] - a[0]*b[2],
+			a[0]*b[1] - a[1]*b[0],
+		);
+	}
+	static dot(a, b) {
+		return a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+	}
+	static barycentric(a, pts) {
+		const u = this.cross.apply(
+			[ pts[2][0]-pts[0][0], pts[1][0]-pts[0][0], pts[0][0]-a[0] ],
+			[ pts[2][1]-pts[0][1], pts[1][1]-pts[0][1], pts[0][1]-a[1] ],
+		);
+		if (Math.abs(u[2] < 1)) return [-1,1,1];
+		return [ 1 - (u[0]+u[1])/u[2], u[1]/u[2], u[0]/u[2] ];
+	}
+}
 class Canvas {
 	constructor(id, width, height) {
 		this.element = document.getElementById(id);
@@ -105,7 +120,7 @@ const parseObj = (text) => {
 			case "v": // Geometric vertices.
 			case "vn": // Vertex normals.
 			case "vt": // Texture vertices.
-				obj[command].push(entry.map((f) => parseFloat(f)));
+				obj[command].push(new Vec3(...entry.map((f) => parseFloat(f))));
 				break;
 			case "f": // Face.
 				obj.f[group].push(entry.map((t) => {
@@ -155,7 +170,7 @@ const animate = (chunk) =>  {
 			avgDT = avgDT*0.9 + dt*0.1;
 			canvas.present(Math.floor(1000/avgDT));
 		}
-		animating = !mouse[0];
+		animating = !mouse[2];
 		lastT = newT;
 		requestAnimationFrame(tick);
 	})();
@@ -170,7 +185,7 @@ const xmur = (str) => {
 	return () => {
 		h = Math.imul(h ^ (h >>> 16), 2246822507);
 		h = Math.imul(h ^ (h >>> 13), 3266489909);
-		return (h ^= h >>> 16) >>> 0;
+		return (h ^= h >>> 16) & 255;
 	};
 };
 
@@ -183,8 +198,7 @@ fetch("/head.obj")
 	const sf = 0.9*Math.min(hh, hw);
 	const ox = hw, oy = hh;
 	const head = obj.f["head"];
-	//const stroke = [255,255,255,255];
-	//const fill   = [127,127,127,255];
+	const lightDir = new Vec3(0, 0, -1);
 	animate((t) => {
 		const cos = Math.cos(t), sin = Math.sin(t);
 		//const cos = 1, sin = 0;
@@ -195,17 +209,35 @@ fetch("/head.obj")
 			const v1 = obj.v[f[1][0]];
 			const v2 = obj.v[f[2][0]];
 
-			const x0 = Math.round(ox + sf*(v0[0]*cos + v0[2]*sin));
-			const y0 = Math.round(oy - sf*v0[1]);
-			const x1 = Math.round(ox + sf*(v1[0]*cos + v1[2]*sin));
-			const y1 = Math.round(oy - sf*v1[1]);
-			const x2 = Math.round(ox + sf*(v2[0]*cos + v2[2]*sin));
-			const y2 = Math.round(oy - sf*v2[1]);
+			const w0 = new Vec3(
+				Math.round(ox + sf*(v0[0]*cos + v0[2]*sin)),
+				Math.round(oy - sf*v0[1]),
+				Math.round(ox + sf*(v0[0]*sin - v0[2]*cos)),
+			);
+			const w1 = new Vec3(
+				Math.round(ox + sf*(v1[0]*cos + v1[2]*sin)),
+				Math.round(oy - sf*v1[1]),
+				Math.round(ox + sf*(v1[0]*sin - v1[2]*cos)),
+			);
+			const w2 = new Vec3(
+				Math.round(ox + sf*(v2[0]*cos + v2[2]*sin)),
+				Math.round(oy - sf*v2[1]),
+				Math.round(ox + sf*(v2[0]*sin - v2[2]*cos)),
+			);
 
+
+			const rgba = [prng(), prng(), prng(), 255];
 			if (!mouse[0]) {
-				canvas.triangleRasterized(x0,y0, x1,y1, x2,y2, [prng()&255, prng()&255, prng()&255, prng()&255]);
+				const n = Vec3.cross(Vec3.sub(w2, w0), Vec3.sub(w1, w0));
+				const i = Vec3.dot(lightDir, n) / n.len();
+				if (i > 0) {
+					rgba[0] *= i;
+					rgba[1] *= i;
+					rgba[2] *= i;
+					canvas.triangleRasterized(w0[0],w0[1], w1[0],w1[1], w2[0],w2[1], rgba);
+				}
 			} else {
-				canvas.triangle(x0,y0, x1,y1, x2,y2, [255,255,255,255]);
+				canvas.triangle(w0[0],w0[1], w1[0],w1[1], w2[0],w2[1], [255,255,255,255]);
 			}
 		}
 	});
