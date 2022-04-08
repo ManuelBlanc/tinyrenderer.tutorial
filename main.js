@@ -1,4 +1,7 @@
 "use strict";
+const ASSERT = (cond) => {
+	if (!cond) throw new Error("assertion failed!");
+};
 class Vec3 extends Array {
 	len() {
 		return Math.sqrt(this[0]*this[0] + this[1]*this[1] + this[2]*this[2]);
@@ -36,6 +39,10 @@ class Canvas {
 		this.height = this.element.height = height;
 		this.context = this.element.getContext("2d");
 		this.image = this.context.createImageData(this.width, this.height);
+		this.element.style.backgroundColor = "black";
+		this.lightDir = new Vec3(0, 0, -1);
+		this.zbuffer = new Float32Array(this.width*this.height);
+		this.debugMode = null;
 	}
 	_idx(x, y) {
 		return y * (this.width<<2) + (x<<2);
@@ -51,7 +58,7 @@ class Canvas {
 	}
 	get(x, y) {
 		const i = this._idx(x, y);
-		const data = this.image.data
+		const data = this.image.data;
 		return [
 			data[i  ],
 			data[i+1],
@@ -69,6 +76,9 @@ class Canvas {
 	}
 	clear() {
 		this.image.data.fill(0);
+		let i = this.width*this.height;
+		while (i > 0) this.zbuffer[--i] = 0; // Faster in Firefox?
+		//this.zbuffer.fill(0);
 	}
 	line(x0, y0, x1, y1, rgba) { // Bresenham's line algorithm.
 		const dx =  Math.abs(x1 - x0), sx = Math.sign(x1 - x0);
@@ -87,24 +97,90 @@ class Canvas {
 		canvas.line(x1,y1, x2,y2, rgba);
 		canvas.line(x2,y2, x0,y0, rgba);
 	}
-	triangleRasterized(x0,y0, x1,y1, x2,y2, rgba) {
-		if (y0 === y1 && y0 === y2) return; // Degenerate.
-		if (y0 > y1) [x0, y0, x1, y1] = [x1, y1, x0, y0];
-		if (y0 > y2) [x0, y0, x2, y2] = [x2, y2, x0, y0];
-		if (y1 > y2) [x1, y1, x2, y2] = [x2, y2, x1, y1];
-		const totalHeight = y2 - y0;
-		for (let y = 0; y < totalHeight; ++y) {
-			const secondHalf = (y > y1 - y0) || (y1 === y0);
-			const segmentHeight = secondHalf ? y2 - y1 : y1 - y0;
-			const alpha = y / totalHeight;
-			const beta  = (y - (secondHalf ? y1 - y0 : 0)) / segmentHeight;
-			let ax = x0 + (x2 - x0)*alpha;
-			let bx = secondHalf ? x1 + (x2 - x1)*beta : x0 + (x1 - x0)*beta;
-			if (ax > bx) [ax, bx] = [bx, ax];
-			for (let x = ax; x <= bx; ++x) {
-				this.set(x, y0 + y, rgba);
+	_scanLine(y, x0, x1, rgba, depth) {
+		if (x0 > x1) [x0, x1] = [x1, x0];
+		const i0 = this._idx(x0, y);
+		const i1 = i0 + ((x1 - x0)*4);
+		const data = this.image.data;
+		const zbuffer = this.zbuffer;
+		let j = Math.floor(y*this.width + x0);
+		for (let i = i0; i <= i1; i+=4, ++j) {
+			if (depth > zbuffer[j]) {
+				zbuffer[j] = depth;
+				data[i  ] = rgba[0];
+				data[i+1] = rgba[1];
+				data[i+2] = rgba[2];
+				data[i+3] = rgba[3];
+				if (this.debugMode === "zbuffer") {
+					data[i] = depth / 1000 * 255;
+					data[i+1] = depth / 1000 * 255;
+					data[i+2] = depth / 1000 * 255;
+					data[i+3] = 255;
+				}
 			}
 		}
+	}
+	triangle3d(w0, w1, w2, rgba) {
+		if (w0[1] === w1[1] && w0[1] === w2[1]) return; // Degenerate.
+		const n = Vec3.cross(Vec3.sub(w2, w0), Vec3.sub(w1, w0));
+		const i = Vec3.dot(this.lightDir, n) / n.len();
+		if (this.debugMode === "wireframe") {
+			this.triangle(w0[0],w0[1], w1[0],w1[1], w2[0],w2[1], [255,255,255,i >= 0 ? 255 : 127]);
+			return;
+		}
+		if (i < 0) {
+			return;
+		}
+		const rgbaI = [rgba[0]*i, rgba[1]*i, rgba[2]*i, rgba[3]];
+		if (w0[1] > w1[1]) [w0, w1] = [w1, w0];
+		if (w0[1] > w2[1]) [w0, w2] = [w2, w0];
+		if (w1[1] > w2[1]) [w1, w2] = [w2, w1];
+		const depth = Math.max(w0[2], w1[2], w2[2]);
+
+		const heightAll = w2[1] - w0[1];
+		const heightTop = w1[1] - w0[1];
+		for (let dy = 0; heightTop && dy <= heightTop; ++dy) {
+			let ax = w0[0] + dy * ((w2[0] - w0[0]) / heightAll);
+			let bx = w0[0] + dy * ((w1[0] - w0[0]) / heightTop);
+			this._scanLine(w0[1] + dy, ax, bx, rgbaI, depth);
+		}
+		const heightBot = w2[1] - w1[1];
+		for (let dy = 0; heightBot && dy <= heightBot; ++dy) {
+			let ax = w2[0] + dy * ((w0[0] - w2[0]) / heightAll);
+			let bx = w2[0] + dy * ((w1[0] - w2[0]) / heightBot);
+			this._scanLine(w2[1] - dy, ax, bx, rgbaI, depth);
+		}
+	}
+}
+class CanvasInput {
+	constructor(canvas) {
+		this.canvas = canvas;
+		const element = canvas.element;
+		element.setAttribute("tabindex", "1");
+		element.focus();
+		this.mouseState = [];
+		element.onmousedown = (evt) => {
+			this.mouseState[evt.button] = true;
+		};
+		element.onmouseup = (evt) => {
+			this.mouseState[evt.button] = false;
+		};
+		element.oncontextmenu = (evt) => {
+			evt.preventDefault();
+		};
+		this.keyboardState = {};
+		element.onkeydown = (evt) => {
+			this.keyboardState[evt.code] = true;
+		};
+		element.onkeyup = (evt) => {
+			this.keyboardState[evt.code] = false;
+		};
+	}
+	mouse(key) {
+		return !!this.mouseState[key];
+	}
+	keyboard(key) {
+		return !!this.keyboardState[key];
 	}
 }
 
@@ -145,15 +221,7 @@ const parseObj = (text) => {
 };
 
 const canvas = new Canvas("renderer", 720, 720);
-
-const mouse = [false, false, false];
-canvas.element.onmousedown = (evt) => {
-	mouse[evt.button] = true; evt.preventDefault();
-};
-canvas.element.onmouseup = (evt) => {
-	mouse[evt.button] = false; evt.preventDefault();
-};
-canvas.element.oncontextmenu = (evt) => evt.preventDefault();
+const input = new CanvasInput(canvas);
 
 const animate = (chunk) =>  {
 	let lastT = performance.now();
@@ -167,10 +235,10 @@ const animate = (chunk) =>  {
 			t += dt;
 			canvas.clear();
 			chunk(t/1000);
-			avgDT = avgDT*0.9 + dt*0.1;
-			canvas.present(Math.floor(1000/avgDT));
+			avgDT = avgDT * 0.9 + 0.1 * (performance.now() - newT);
+			canvas.present(Math.floor(1000 / avgDT));
 		}
-		animating = !mouse[2];
+		animating = !input.mouse(0);
 		lastT = newT;
 		requestAnimationFrame(tick);
 	})();
@@ -198,8 +266,15 @@ fetch("/head.obj")
 	const sf = 0.9*Math.min(hh, hw);
 	const ox = hw, oy = hh;
 	const head = obj.f["head"];
-	const lightDir = new Vec3(0, 0, -1);
 	animate((t) => {
+		if (input.keyboard("Digit0") || input.keyboard("Digit3")) {
+			canvas.debugMode = null;
+		} else if (input.keyboard("Digit1")) {
+			canvas.debugMode = "wireframe";
+		} else if (input.keyboard("Digit2")) {
+			canvas.debugMode = "zbuffer";
+		}
+
 		const cos = Math.cos(t), sin = Math.sin(t);
 		//const cos = 1, sin = 0;
 		const prng = xmur("head");
@@ -225,20 +300,8 @@ fetch("/head.obj")
 				Math.round(ox + sf*(v2[0]*sin - v2[2]*cos)),
 			);
 
-
 			const rgba = [prng(), prng(), prng(), 255];
-			if (!mouse[0]) {
-				const n = Vec3.cross(Vec3.sub(w2, w0), Vec3.sub(w1, w0));
-				const i = Vec3.dot(lightDir, n) / n.len();
-				if (i > 0) {
-					rgba[0] *= i;
-					rgba[1] *= i;
-					rgba[2] *= i;
-					canvas.triangleRasterized(w0[0],w0[1], w1[0],w1[1], w2[0],w2[1], rgba);
-				}
-			} else {
-				canvas.triangle(w0[0],w0[1], w1[0],w1[1], w2[0],w2[1], [255,255,255,255]);
-			}
+			canvas.triangle3d(w0, w1, w2, rgba);
 		}
 	});
 });
