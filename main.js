@@ -6,6 +6,18 @@ class Vec3 extends Array {
 	len() {
 		return Math.sqrt(this[0]*this[0] + this[1]*this[1] + this[2]*this[2]);
 	}
+	round() {
+		this[0] = Math.round(this[0]);
+		this[1] = Math.round(this[1]);
+		this[2] = Math.round(this[2]);
+		return this;
+	}
+	div(c) {
+		this[0] /= c;
+		this[1] /= c;
+		this[2] /= c;
+		return this;
+	}
 	static sub(a, b) {
 		return new Vec3(
 			a[0] - b[0],
@@ -23,29 +35,44 @@ class Vec3 extends Array {
 	static dot(a, b) {
 		return a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
 	}
-	static barycentric(a, pts) {
-		const u = this.cross.apply(
-			[ pts[2][0]-pts[0][0], pts[1][0]-pts[0][0], pts[0][0]-a[0] ],
-			[ pts[2][1]-pts[0][1], pts[1][1]-pts[0][1], pts[0][1]-a[1] ],
+	barycentric(pts) {
+		const u = Vec3.cross.apply(
+			[ pts[2][0]-pts[0][0], pts[1][0]-pts[0][0], pts[0][0]-this[0] ],
+			[ pts[2][1]-pts[0][1], pts[1][1]-pts[0][1], pts[0][1]-this[1] ],
 		);
 		if (Math.abs(u[2] < 1)) return [-1,1,1];
 		return [ 1 - (u[0]+u[1])/u[2], u[1]/u[2], u[0]/u[2] ];
 	}
 }
+class Matrix4x4 extends Array {
+	// xx, xy, xz, tz
+	// yx, yy, yz, ty
+	// zx, zy, zz, tz
+	static apply(m, a) {
+		return new Vec3(
+			a[0]*m[ 0] + a[1]*m[ 1] + a[2]*m[ 2] + m[ 3],
+			a[0]*m[ 4] + a[1]*m[ 5] + a[2]*m[ 6] + m[ 7],
+			a[0]*m[ 8] + a[1]*m[ 9] + a[2]*m[10] + m[11],
+		)
+	}
+}
+
 class Canvas {
-	constructor(id, width, height) {
-		this.element = document.getElementById(id);
+	constructor(element, width, height, scaling) {
+		this.element = element
+		element.style.width  = `${scaling * width }px`;
+		element.style.height = `${scaling * height}px`;
 		this.width = this.element.width = width;
 		this.height = this.element.height = height;
+		this.scaling = scaling;
 		this.context = this.element.getContext("2d");
 		this.image = this.context.createImageData(this.width, this.height);
 		this.element.style.backgroundColor = "black";
-		this.lightDir = new Vec3(0, 0, -1);
 		this.zbuffer = new Float32Array(this.width*this.height);
 		this.debugMode = null;
 	}
 	_idx(x, y) {
-		return y * (this.width<<2) + (x<<2);
+		return (y|0)*(this.width<<2) + (x<<2);
 	};
 	set(x, y, rgba) {
 		const i = this._idx(x, y);
@@ -70,8 +97,8 @@ class Canvas {
 		this.context.putImageData(this.image, 0, 0);
 		if (fps) {
 			this.context.fillStyle = "#00ff00";
-			this.context.font = "30px Arial";
-			this.context.fillText(`${fps} FPS`, 10, 35);
+			this.context.font = `${22/this.scaling}px Arial`;
+			this.context.fillText(`${fps} FPS`, 10/this.scaling, (5 + 22)/this.scaling);
 		}
 	}
 	clear() {
@@ -107,23 +134,24 @@ class Canvas {
 		for (let i = i0; i <= i1; i+=4, ++j) {
 			if (depth > zbuffer[j]) {
 				zbuffer[j] = depth;
-				data[i  ] = rgba[0];
-				data[i+1] = rgba[1];
-				data[i+2] = rgba[2];
-				data[i+3] = rgba[3];
-				if (this.debugMode === "zbuffer") {
-					data[i] = depth / 1000 * 255;
-					data[i+1] = depth / 1000 * 255;
-					data[i+2] = depth / 1000 * 255;
+				if (!this.debugMode) {
+					data[i  ] = rgba[0];
+					data[i+1] = rgba[1];
+					data[i+2] = rgba[2];
+					data[i+3] = rgba[3];
+				} else if (this.debugMode === "zbuffer") {
+					data[i  ] = Math.pow(depth, 2) * (255/1000000);
+					data[i+1] = Math.pow(depth, 2) * (255/1000000);
+					data[i+2] = Math.pow(depth, 2) * (255/1000000);
 					data[i+3] = 255;
 				}
 			}
 		}
 	}
-	triangle3d(w0, w1, w2, rgba) {
+	triangle3d(w0, w1, w2, rgba, renderOpts) {
 		if (w0[1] === w1[1] && w0[1] === w2[1]) return; // Degenerate.
 		const n = Vec3.cross(Vec3.sub(w2, w0), Vec3.sub(w1, w0));
-		const i = Vec3.dot(this.lightDir, n) / n.len();
+		const i = Vec3.dot(renderOpts.lightDir, n) / n.len();
 		if (this.debugMode === "wireframe") {
 			this.triangle(w0[0],w0[1], w1[0],w1[1], w2[0],w2[1], [255,255,255,i >= 0 ? 255 : 127]);
 			return;
@@ -152,29 +180,27 @@ class Canvas {
 		}
 	}
 }
-class CanvasInput {
-	constructor(canvas) {
-		this.canvas = canvas;
-		const element = canvas.element;
+class InputHandler {
+	constructor(element) {
 		element.setAttribute("tabindex", "1");
 		element.focus();
 		this.mouseState = [];
-		element.onmousedown = (evt) => {
+		element.addEventListener("mousedown", (evt) => {
 			this.mouseState[evt.button] = true;
-		};
-		element.onmouseup = (evt) => {
+		});
+		element.addEventListener("mouseup", (evt) => {
 			this.mouseState[evt.button] = false;
-		};
-		element.oncontextmenu = (evt) => {
+		});
+		element.addEventListener("contextmenu", (evt) => {
 			evt.preventDefault();
-		};
+		});
 		this.keyboardState = {};
-		element.onkeydown = (evt) => {
+		element.addEventListener("keydown", (evt) => {
 			this.keyboardState[evt.code] = true;
-		};
-		element.onkeyup = (evt) => {
+		});
+		element.addEventListener("keyup", (evt) => {
 			this.keyboardState[evt.code] = false;
-		};
+		});
 	}
 	mouse(key) {
 		return !!this.mouseState[key];
@@ -211,6 +237,7 @@ const parseObj = (text) => {
 				if (!obj.f[group]) {
 					obj.f[group] = [];
 				}
+				break;
 			case "s": // Smoothing group.
 				break; // Ignored.
 			default:
@@ -220,8 +247,9 @@ const parseObj = (text) => {
 	return obj;
 };
 
-const canvas = new Canvas("renderer", 720, 720);
-const input = new CanvasInput(canvas);
+const element = document.getElementById("renderer");
+const canvas = new Canvas(element, 720, 600, 1);
+const input = new InputHandler(element);
 
 const animate = (chunk) =>  {
 	let lastT = performance.now();
@@ -266,6 +294,9 @@ fetch("/head.obj")
 	const sf = 0.9*Math.min(hh, hw);
 	const ox = hw, oy = hh;
 	const head = obj.f["head"];
+	const renderOpts = {
+		lightDir: new Vec3(0, 0, -1),
+	};
 	animate((t) => {
 		if (input.keyboard("Digit0") || input.keyboard("Digit3")) {
 			canvas.debugMode = null;
@@ -274,9 +305,12 @@ fetch("/head.obj")
 		} else if (input.keyboard("Digit2")) {
 			canvas.debugMode = "zbuffer";
 		}
-
 		const cos = Math.cos(t), sin = Math.sin(t);
-		//const cos = 1, sin = 0;
+		let transform = new Matrix4x4(
+			sf*cos , 0      , sf*sin  , ox ,
+			0      , -sf    , 0       , oy ,
+			sf*sin , 0      , -sf*cos , ox ,
+		);
 		const prng = xmur("head");
 		for (let fi = 0; fi < head.length; ++fi) {
 			const f = head[fi];
@@ -284,24 +318,11 @@ fetch("/head.obj")
 			const v1 = obj.v[f[1][0]];
 			const v2 = obj.v[f[2][0]];
 
-			const w0 = new Vec3(
-				Math.round(ox + sf*(v0[0]*cos + v0[2]*sin)),
-				Math.round(oy - sf*v0[1]),
-				Math.round(ox + sf*(v0[0]*sin - v0[2]*cos)),
-			);
-			const w1 = new Vec3(
-				Math.round(ox + sf*(v1[0]*cos + v1[2]*sin)),
-				Math.round(oy - sf*v1[1]),
-				Math.round(ox + sf*(v1[0]*sin - v1[2]*cos)),
-			);
-			const w2 = new Vec3(
-				Math.round(ox + sf*(v2[0]*cos + v2[2]*sin)),
-				Math.round(oy - sf*v2[1]),
-				Math.round(ox + sf*(v2[0]*sin - v2[2]*cos)),
-			);
-
+			const w0 = Matrix4x4.apply(transform, v0).round();
+			const w1 = Matrix4x4.apply(transform, v1).round();
+			const w2 = Matrix4x4.apply(transform, v2).round();
 			const rgba = [prng(), prng(), prng(), 255];
-			canvas.triangle3d(w0, w1, w2, rgba);
+			canvas.triangle3d(w0, w1, w2, rgba, renderOpts);
 		}
 	});
 });
