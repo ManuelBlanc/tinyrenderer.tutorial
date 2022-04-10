@@ -2,77 +2,86 @@
 const ASSERT = (cond) => {
 	if (!cond) throw new Error("assertion failed!");
 };
-class Vec3 extends Array {
+class Vec3 {
+	constructor(x, y, z) {
+		this.x=x; this.y=y; this.z=z;
+	}
 	len() {
-		return Math.sqrt(this[0]*this[0] + this[1]*this[1] + this[2]*this[2]);
+		return Math.sqrt(this.x*this.x + this.y*this.y + this.z*this.z);
 	}
 	round() {
-		this[0] = Math.round(this[0]);
-		this[1] = Math.round(this[1]);
-		this[2] = Math.round(this[2]);
+		this.x = Math.round(this.x);
+		this.y = Math.round(this.y);
+		this.z = Math.round(this.z);
 		return this;
 	}
 	div(c) {
-		this[0] /= c;
-		this[1] /= c;
-		this[2] /= c;
+		this.x /= c; this.y /= c; this.z /= c;
 		return this;
 	}
 	static sub(a, b) {
 		return new Vec3(
-			a[0] - b[0],
-			a[1] - b[1],
-			a[2] - b[2],
+			a.x - b.x,
+			a.y - b.y,
+			a.z - b.z,
 		);
 	}
 	static cross(a, b) {
 		return new Vec3(
-			a[1]*b[2] - a[2]*b[1],
-			a[2]*b[0] - a[0]*b[2],
-			a[0]*b[1] - a[1]*b[0],
+			a.y*b.z - a.z*b.y,
+			a.z*b.x - a.x*b.z,
+			a.x*b.y - a.y*b.x,
 		);
 	}
 	static dot(a, b) {
-		return a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+		return a.x*b.x + a.y*b.y + a.z*b.z;
 	}
 	barycentric(pts) {
-		const u = Vec3.cross.apply(
-			[ pts[2][0]-pts[0][0], pts[1][0]-pts[0][0], pts[0][0]-this[0] ],
-			[ pts[2][1]-pts[0][1], pts[1][1]-pts[0][1], pts[0][1]-this[1] ],
+		const u = Vec3.cross(
+			[ pts[2].x-pts[0].x, pts[1].x-pts[0].x, pts[0].x-this.x ],
+			[ pts[2].y-pts[0].y, pts[1].y-pts[0].y, pts[0].y-this.y ],
 		);
-		if (Math.abs(u[2] < 1)) return [-1,1,1];
-		return [ 1 - (u[0]+u[1])/u[2], u[1]/u[2], u[0]/u[2] ];
+		if (Math.abs(u.z < 1)) return [-1,1,1];
+		return [ 1 - (u.x+u.y)/u.z, u.y/u.z, u.x/u.z ];
 	}
 }
-class Matrix4x4 extends Array {
-	// xx, xy, xz, tz
-	// yx, yy, yz, ty
-	// zx, zy, zz, tz
-	static apply(m, a) {
+class Matrix4x4 {
+	constructor(
+		xx, xy, xz, tx,
+		yx, yy, yz, ty,
+		zx, zy, zz, tz,
+	) {
+		this.xx=xx; this.xy=xy; this.xz=xz; this.tx=tx;
+		this.yx=yx; this.yy=yy; this.yz=yz; this.ty=ty;
+		this.zx=zx; this.zy=zy; this.zz=zz; this.tz=tz;
+	}
+	apply(v) {
 		return new Vec3(
-			a[0]*m[ 0] + a[1]*m[ 1] + a[2]*m[ 2] + m[ 3],
-			a[0]*m[ 4] + a[1]*m[ 5] + a[2]*m[ 6] + m[ 7],
-			a[0]*m[ 8] + a[1]*m[ 9] + a[2]*m[10] + m[11],
+			v.x*this.xx + v.y*this.xy + v.z*this.xz + this.tx,
+			v.x*this.yx + v.y*this.yy + v.z*this.yz + this.ty,
+			v.x*this.zx + v.y*this.zy + v.z*this.zz + this.tz,
 		)
 	}
 }
 
 class Canvas {
-	constructor(element, width, height, scaling) {
+	constructor(element, width, height, scaling=1) {
 		this.element = element
-		element.style.width  = `${scaling * width }px`;
-		element.style.height = `${scaling * height}px`;
-		this.width = this.element.width = width;
-		this.height = this.element.height = height;
+		this.width  = this.element.width  = 0|(width/scaling);
+		this.height = this.element.height = 0|(height/scaling);
+		element.style.width  = `${scaling * this.width }px`;
+		element.style.height = `${scaling * this.height}px`;
+		element.style.imageRendering = "pixelated";
 		this.scaling = scaling;
 		this.context = this.element.getContext("2d");
 		this.image = this.context.createImageData(this.width, this.height);
 		this.element.style.backgroundColor = "black";
 		this.zbuffer = new Float32Array(this.width*this.height);
 		this.debugMode = null;
+		this.debugTextPos = 0;
 	}
 	_idx(x, y) {
-		return (y|0)*(this.width<<2) + (x<<2);
+		return (0|y)*(this.width<<2) + (x<<2);
 	};
 	set(x, y, rgba) {
 		const i = this._idx(x, y);
@@ -93,18 +102,28 @@ class Canvas {
 			data[i+3],
 		];
 	}
-	present(fps) {
+	present() {
 		this.context.putImageData(this.image, 0, 0);
-		if (fps) {
-			this.context.fillStyle = "#00ff00";
-			this.context.font = `${22/this.scaling}px Arial`;
-			this.context.fillText(`${fps} FPS`, 10/this.scaling, (5 + 22)/this.scaling);
-		}
+		this.debugTextPos = 0;
+	}
+	debugText(text) {
+		this.context.fillStyle = "#00ff00";
+		const fontSize = 22;
+		this.context.font = `${fontSize/this.scaling}px monospace`;
+		const x = 10, y = 5 + (this.debugTextPos += fontSize);
+		this.context.fillText(text, x/this.scaling, y/this.scaling);
 	}
 	clear() {
-		this.image.data.fill(0);
 		let i = this.width*this.height;
-		while (i > 0) this.zbuffer[--i] = 0; // Faster in Firefox?
+		let j = i<<2;
+		while (i > 0) {
+			this.zbuffer[--i] = 0;
+			this.image.data[--j] = 0;
+			this.image.data[--j] = 0;
+			this.image.data[--j] = 0;
+			this.image.data[--j] = 0;
+		}
+		//this.image.data.fill(0); // Slower.
 		//this.zbuffer.fill(0);
 	}
 	line(x0, y0, x1, y1, rgba) { // Bresenham's line algorithm.
@@ -149,34 +168,34 @@ class Canvas {
 		}
 	}
 	triangle3d(w0, w1, w2, rgba, renderOpts) {
-		if (w0[1] === w1[1] && w0[1] === w2[1]) return; // Degenerate.
+		if (w0.y === w1.y && w0.y === w2.y) return; // Degenerate.
 		const n = Vec3.cross(Vec3.sub(w2, w0), Vec3.sub(w1, w0));
 		const i = Vec3.dot(renderOpts.lightDir, n) / n.len();
 		if (this.debugMode === "wireframe") {
-			this.triangle(w0[0],w0[1], w1[0],w1[1], w2[0],w2[1], [255,255,255,i >= 0 ? 255 : 127]);
+			this.triangle(w0.x,w0.y, w1.x,w1.y, w2.x,w2.y, [255,255,255,i >= 0 ? 255 : 127]);
 			return;
 		}
 		if (i < 0) {
 			return;
 		}
 		const rgbaI = [rgba[0]*i, rgba[1]*i, rgba[2]*i, rgba[3]];
-		if (w0[1] > w1[1]) [w0, w1] = [w1, w0];
-		if (w0[1] > w2[1]) [w0, w2] = [w2, w0];
-		if (w1[1] > w2[1]) [w1, w2] = [w2, w1];
-		const depth = Math.max(w0[2], w1[2], w2[2]);
+		if (w0.y > w1.y) [w0, w1] = [w1, w0];
+		if (w0.y > w2.y) [w0, w2] = [w2, w0];
+		if (w1.y > w2.y) [w1, w2] = [w2, w1];
+		const depth = Math.max(w0.z, w1.z, w2.z);
 
-		const heightAll = w2[1] - w0[1];
-		const heightTop = w1[1] - w0[1];
+		const heightAll = w2.y - w0.y;
+		const heightTop = w1.y - w0.y;
 		for (let dy = 0; heightTop && dy <= heightTop; ++dy) {
-			let ax = w0[0] + dy * ((w2[0] - w0[0]) / heightAll);
-			let bx = w0[0] + dy * ((w1[0] - w0[0]) / heightTop);
-			this._scanLine(w0[1] + dy, ax, bx, rgbaI, depth);
+			let ax = w0.x + dy * ((w2.x - w0.x) / heightAll);
+			let bx = w0.x + dy * ((w1.x - w0.x) / heightTop);
+			this._scanLine(w0.y + dy, ax, bx, rgbaI, depth);
 		}
-		const heightBot = w2[1] - w1[1];
+		const heightBot = w2.y - w1.y;
 		for (let dy = 0; heightBot && dy <= heightBot; ++dy) {
-			let ax = w2[0] + dy * ((w0[0] - w2[0]) / heightAll);
-			let bx = w2[0] + dy * ((w1[0] - w2[0]) / heightBot);
-			this._scanLine(w2[1] - dy, ax, bx, rgbaI, depth);
+			let ax = w2.x + dy * ((w0.x - w2.x) / heightAll);
+			let bx = w2.x + dy * ((w1.x - w2.x) / heightBot);
+			this._scanLine(w2.y - dy, ax, bx, rgbaI, depth);
 		}
 	}
 }
@@ -248,7 +267,7 @@ const parseObj = (text) => {
 };
 
 const element = document.getElementById("renderer");
-const canvas = new Canvas(element, 720, 600, 1);
+const canvas = new Canvas(element, 800, 600, 1);
 const input = new InputHandler(element);
 
 const animate = (chunk) =>  {
@@ -264,7 +283,13 @@ const animate = (chunk) =>  {
 			canvas.clear();
 			chunk(t/1000);
 			avgDT = avgDT * 0.9 + 0.1 * (performance.now() - newT);
-			canvas.present(Math.floor(1000 / avgDT));
+			canvas.present();
+			const fps = 1000 / avgDT;
+			canvas.debugText(`${fps.toFixed(0).padStart(3)} FPS`);
+			canvas.debugText(`${avgDT.toFixed(3).padStart(6)} ms`);
+			if (canvas.debugMode) {
+				canvas.debugText(`mode: ${canvas.debugMode}`);
+			}
 		}
 		animating = !input.mouse(0);
 		lastT = newT;
@@ -318,9 +343,9 @@ fetch("/head.obj")
 			const v1 = obj.v[f[1][0]];
 			const v2 = obj.v[f[2][0]];
 
-			const w0 = Matrix4x4.apply(transform, v0).round();
-			const w1 = Matrix4x4.apply(transform, v1).round();
-			const w2 = Matrix4x4.apply(transform, v2).round();
+			const w0 = transform.apply(v0).round();
+			const w1 = transform.apply(v1).round();
+			const w2 = transform.apply(v2).round();
 			const rgba = [prng(), prng(), prng(), 255];
 			canvas.triangle3d(w0, w1, w2, rgba, renderOpts);
 		}
