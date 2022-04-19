@@ -6,6 +6,9 @@ class Vec3 {
 	constructor(x, y, z) {
 		this.x=x; this.y=y; this.z=z;
 	}
+	valid() {
+		return !(isNaN(this.x) || isNaN(this.y) || isNaN(this.z));
+	}
 	len() {
 		return Math.sqrt(this.x*this.x + this.y*this.y + this.z*this.z);
 	}
@@ -41,8 +44,17 @@ class Vec3 {
 			[ pts[2].x-pts[0].x, pts[1].x-pts[0].x, pts[0].x-this.x ],
 			[ pts[2].y-pts[0].y, pts[1].y-pts[0].y, pts[0].y-this.y ],
 		);
-		if (Math.abs(u.z < 1)) return [-1,1,1];
-		return [ 1 - (u.x+u.y)/u.z, u.y/u.z, u.x/u.z ];
+		if (Math.abs(u.z < 1)) return new Vec3(-1, 1, 1);
+		return new Vec3(1 - (u.x+u.y)/u.z, u.y/u.z, u.x/u.z);
+	}
+	static normal(v0, v1, v2) {
+		const ax = v2.x - v0.x, ay = v2.y - v0.y, az = v2.z - v0.z;
+		const bx = v1.x - v0.x, by = v1.y - v0.y, bz = v1.z - v0.z;
+		return new Vec3(
+			ay*bz - az*by,
+			az*bx - ax*bz,
+			ax*by - ay*bx,
+		);
 	}
 }
 class Matrix4x4 {
@@ -168,34 +180,57 @@ class Canvas {
 		}
 	}
 	triangle3d(w0, w1, w2, rgba, renderOpts) {
-		if (w0.y === w1.y && w0.y === w2.y) return; // Degenerate.
-		const n = Vec3.cross(Vec3.sub(w2, w0), Vec3.sub(w1, w0));
-		const i = Vec3.dot(renderOpts.lightDir, n) / n.len();
+		//if (w0.y === w1.y && w0.y === w2.y) return; // Degenerate.
+		const n = Vec3.normal(w0, w1, w2);
+		const li = Vec3.dot(renderOpts.lightDir, n) / n.len();
 		if (this.debugMode === "wireframe") {
-			this.triangle(w0.x,w0.y, w1.x,w1.y, w2.x,w2.y, [255,255,255,i >= 0 ? 255 : 127]);
+			this.triangle(w0.x,w0.y, w1.x,w1.y, w2.x,w2.y, [255,255,255,li >= 0 ? 255 : 127]);
 			return;
 		}
-		if (i < 0) {
+		if (li === 0) {
 			return;
 		}
-		const rgbaI = [rgba[0]*i, rgba[1]*i, rgba[2]*i, rgba[3]];
-		if (w0.y > w1.y) [w0, w1] = [w1, w0];
-		if (w0.y > w2.y) [w0, w2] = [w2, w0];
-		if (w1.y > w2.y) [w1, w2] = [w2, w1];
-		const depth = Math.max(w0.z, w1.z, w2.z);
+		const rgbaI = [rgba[0]*li, rgba[1]*li, rgba[2]*li, rgba[3]];
 
-		const heightAll = w2.y - w0.y;
-		const heightTop = w1.y - w0.y;
-		for (let dy = 0; heightTop && dy <= heightTop; ++dy) {
-			let ax = w0.x + dy * ((w2.x - w0.x) / heightAll);
-			let bx = w0.x + dy * ((w1.x - w0.x) / heightTop);
-			this._scanLine(w0.y + dy, ax, bx, rgbaI, depth);
+		const xMin = Math.max(Math.min(w0.x, w1.x, w2.x), 0);
+		const xMax = Math.min(Math.max(w0.x, w1.x, w2.x), this.width);
+		const yMin = Math.max(Math.min(w0.y, w1.y, w2.y), 0);
+		const yMax = Math.min(Math.max(w0.y, w1.y, w2.y), this.height);
+
+		const Px = w2.x-w0.x, Py = w1.x-w0.x;
+		const Qx = w2.y-w0.y, Qy = w1.y-w0.y;
+		const uz = Px*Qy - Py*Qx;
+		if (uz === 0) {
+			return;
 		}
-		const heightBot = w2.y - w1.y;
-		for (let dy = 0; heightBot && dy <= heightBot; ++dy) {
-			let ax = w2.x + dy * ((w0.x - w2.x) / heightAll);
-			let bx = w2.x + dy * ((w1.x - w2.x) / heightBot);
-			this._scanLine(w2.y - dy, ax, bx, rgbaI, depth);
+
+		const data = this.image.data;
+		const zbuffer = this.zbuffer;
+		for (let y = yMin; y <= yMax; ++y) {
+			let k = this.width*y + xMin
+			for (let x = xMin; x <= xMax; ++x, ++k) {
+				const Pz = w0.x-x, Qz = w0.y-y;
+				const ux = Py*Qz - Pz*Qy, uy = Pz*Qx - Px*Qz;
+				const bx = 1 - (ux+uy)/uz, by = uy/uz, bz = ux/uz;
+				if (bx >= 0 && by >= 0 && bz >= 0) {
+					const depth = w0.z*bx + w1.z*by + w2.z*bz;
+					if (depth > zbuffer[k]) {
+						zbuffer[k] = depth;
+						const i = k << 2;
+						if (!this.debugMode) {
+							data[i  ] = rgbaI[0];
+							data[i+1] = rgbaI[1];
+							data[i+2] = rgbaI[2];
+							data[i+3] = rgbaI[3];
+						} else if (this.debugMode === "zbuffer") {
+							data[i  ] = Math.pow(depth, 2) * (255/1000000);
+							data[i+1] = Math.pow(depth, 2) * (255/1000000);
+							data[i+2] = Math.pow(depth, 2) * (255/1000000);
+							data[i+3] = 255;
+						}
+					}
+				}
+			}
 		}
 	}
 }
@@ -323,13 +358,21 @@ fetch("/head.obj")
 		lightDir: new Vec3(0, 0, -1),
 	};
 	animate((t) => {
-		if (input.keyboard("Digit0") || input.keyboard("Digit3")) {
-			canvas.debugMode = null;
+		if (input.keyboard("Digit0")) {
+			canvas.debugMode = "empty";
 		} else if (input.keyboard("Digit1")) {
 			canvas.debugMode = "wireframe";
 		} else if (input.keyboard("Digit2")) {
 			canvas.debugMode = "zbuffer";
+		} else if (input.keyboard("Digit3")) {
+			canvas.debugMode = null;
 		}
+
+		if (canvas.debugMode === "empty") {
+			return;
+		}
+
+		t = Math.PI;
 		const cos = Math.cos(t), sin = Math.sin(t);
 		let transform = new Matrix4x4(
 			sf*cos , 0      , sf*sin  , ox ,
