@@ -91,6 +91,8 @@ class Canvas {
 		this.zbuffer = new Float32Array(this.width*this.height);
 		this.debugMode = null;
 		this.debugTextPos = 0;
+		this.imageDataClear = new Uint32Array(this.image.data.buffer);
+		this.zbufferClear = new Uint32Array(this.zbuffer.buffer);
 	}
 	_idx(x, y) {
 		return (0|y)*(this.width<<2) + (x<<2);
@@ -126,14 +128,9 @@ class Canvas {
 		this.context.fillText(text, x/this.scaling, y/this.scaling);
 	}
 	clear() {
-		let i = this.width*this.height;
-		let j = i<<2;
-		while (i > 0) {
-			this.zbuffer[--i] = 0;
-			this.image.data[--j] = 0;
-			this.image.data[--j] = 0;
-			this.image.data[--j] = 0;
-			this.image.data[--j] = 0;
+		for (let i = this.width*this.height; i > 0; --i) {
+			this.zbufferClear[i] = 0;
+			this.imageDataClear[i] = 0;
 		}
 		//this.image.data.fill(0); // Slower.
 		//this.zbuffer.fill(0);
@@ -155,21 +152,29 @@ class Canvas {
 		canvas.line(x1,y1, x2,y2, rgba);
 		canvas.line(x2,y2, x0,y0, rgba);
 	}
-	_scanLine(y, x0, x1, rgba, depth) {
-		if (x0 > x1) [x0, x1] = [x1, x0];
-		const i0 = this._idx(x0, y);
-		const i1 = i0 + ((x1 - x0)*4);
+	_scanLine(y, x, x1, Px, Py, Qx, Qy, uz, w0x, w0y, rgba, depth) {
+		x |= 0; x1 |= 0; // Ensure integer coordinate inputs.
+		if (x > x1) [x, x1] = [x1, x];
 		const data = this.image.data;
 		const zbuffer = this.zbuffer;
-		let j = Math.floor(y*this.width + x0);
-		for (let i = i0; i <= i1; i+=4, ++j) {
+		const Qz = w0y - y;
+		for (let j = y*this.width + x; x <= x1; ++x, ++j) {
 			if (depth > zbuffer[j]) {
 				zbuffer[j] = depth;
+				const Pz = w0x - x;
+				const ux = Py*Qz - Pz*Qy, uy = Pz*Qx - Px*Qz;
+				const bx = 1 - (ux + uy)/uz, by = uy/uz, bz = ux/uz;
+				const i = j << 2;
 				if (!this.debugMode) {
 					data[i  ] = rgba[0];
 					data[i+1] = rgba[1];
 					data[i+2] = rgba[2];
 					data[i+3] = rgba[3];
+				} else if (this.debugMode === "barycentric") {
+					data[i  ] = bx * 255;
+					data[i+1] = by * 255;
+					data[i+2] = bz * 255;
+					data[i+3] = 255;
 				} else if (this.debugMode === "zbuffer") {
 					data[i  ] = Math.pow(depth, 2) * (255/1000000);
 					data[i+1] = Math.pow(depth, 2) * (255/1000000);
@@ -192,45 +197,31 @@ class Canvas {
 		}
 		const rgbaI = [rgba[0]*li, rgba[1]*li, rgba[2]*li, rgba[3]];
 
-		const xMin = Math.max(Math.min(w0.x, w1.x, w2.x), 0);
-		const xMax = Math.min(Math.max(w0.x, w1.x, w2.x), this.width);
-		const yMin = Math.max(Math.min(w0.y, w1.y, w2.y), 0);
-		const yMax = Math.min(Math.max(w0.y, w1.y, w2.y), this.height);
-
-		const Px = w2.x-w0.x, Py = w1.x-w0.x;
-		const Qx = w2.y-w0.y, Qy = w1.y-w0.y;
+		const Px = w2.x - w0.x, Py = w1.x - w0.x;
+		const Qx = w2.y - w0.y, Qy = w1.y - w0.y;
+		const w0x = w0.x, w0y = w0.y;
 		const uz = Px*Qy - Py*Qx;
 		if (uz === 0) {
 			return;
 		}
 
-		const data = this.image.data;
-		const zbuffer = this.zbuffer;
-		for (let y = yMin; y <= yMax; ++y) {
-			let k = this.width*y + xMin
-			for (let x = xMin; x <= xMax; ++x, ++k) {
-				const Pz = w0.x-x, Qz = w0.y-y;
-				const ux = Py*Qz - Pz*Qy, uy = Pz*Qx - Px*Qz;
-				const bx = 1 - (ux+uy)/uz, by = uy/uz, bz = ux/uz;
-				if (bx >= 0 && by >= 0 && bz >= 0) {
-					const depth = w0.z*bx + w1.z*by + w2.z*bz;
-					if (depth > zbuffer[k]) {
-						zbuffer[k] = depth;
-						const i = k << 2;
-						if (!this.debugMode) {
-							data[i  ] = rgbaI[0];
-							data[i+1] = rgbaI[1];
-							data[i+2] = rgbaI[2];
-							data[i+3] = rgbaI[3];
-						} else if (this.debugMode === "zbuffer") {
-							data[i  ] = Math.pow(depth, 2) * (255/1000000);
-							data[i+1] = Math.pow(depth, 2) * (255/1000000);
-							data[i+2] = Math.pow(depth, 2) * (255/1000000);
-							data[i+3] = 255;
-						}
-					}
-				}
-			}
+		if (w0.y > w1.y) [w0, w1] = [w1, w0];
+		if (w0.y > w2.y) [w0, w2] = [w2, w0];
+		if (w1.y > w2.y) [w1, w2] = [w2, w1];
+		const depth = Math.max(w0.z, w1.z, w2.z);
+
+		const heightAll = w2.y - w0.y;
+		const heightTop = w1.y - w0.y;
+		for (let dy = 0; heightTop && dy <= heightTop; ++dy) {
+			let x0 = w0.x + dy * ((w2.x - w0.x) / heightAll);
+			let x1 = w0.x + dy * ((w1.x - w0.x) / heightTop);
+			this._scanLine(w0.y + dy, x0, x1, Px, Py, Qx, Qy, uz, w0x, w0y, rgbaI, depth);
+		}
+		const heightBot = w2.y - w1.y;
+		for (let dy = 0; heightBot && dy <= heightBot; ++dy) {
+			let x0 = w2.x + dy * ((w0.x - w2.x) / heightAll);
+			let x1 = w2.x + dy * ((w1.x - w2.x) / heightBot);
+			this._scanLine(w2.y - dy, x0, x1, Px, Py, Qx, Qy, uz, w0x, w0y, rgbaI, depth);
 		}
 	}
 }
@@ -365,6 +356,8 @@ fetch("/head.obj")
 		} else if (input.keyboard("Digit2")) {
 			canvas.debugMode = "zbuffer";
 		} else if (input.keyboard("Digit3")) {
+			canvas.debugMode = "barycentric";
+		} else if (input.keyboard("Digit4")) {
 			canvas.debugMode = null;
 		}
 
