@@ -67,6 +67,9 @@ class Matrix4x4 {
 		this.yx=yx; this.yy=yy; this.yz=yz; this.ty=ty;
 		this.zx=zx; this.zy=zy; this.zz=zz; this.tz=tz;
 	}
+	static identity() {
+		return new Matrix4x4(1,0,0,0,0,1,0,0,0,0,1,0);
+	}
 	apply(v) {
 		return new Vec3(
 			v.x*this.xx + v.y*this.xy + v.z*this.xz + this.tx,
@@ -74,6 +77,14 @@ class Matrix4x4 {
 			v.x*this.zx + v.y*this.zy + v.z*this.zz + this.tz,
 		)
 	}
+}
+
+const RenderMode = {
+	NONE: Symbol.for("NONE"),
+	WIREFRAME: Symbol.for("WIREFRAME"),
+	ZBUFFER: Symbol.for("ZBUFFER"),
+	BARYCENTRIC: Symbol.for("BARYCENTRIC"),
+	FULL: Symbol.for("FULL"),
 }
 
 class Canvas {
@@ -89,10 +100,12 @@ class Canvas {
 		this.image = this.context.createImageData(this.width, this.height);
 		this.element.style.backgroundColor = "black";
 		this.zbuffer = new Float32Array(this.width*this.height);
-		this.debugMode = null;
+		this.renderMode = RenderMode.FULL;
 		this.debugTextPos = 0;
 		this.imageDataClear = new Uint32Array(this.image.data.buffer);
 		this.zbufferClear = new Uint32Array(this.zbuffer.buffer);
+		this.lightDir = new Vec3(0, 0, -1);
+		this.transform = Matrix4x4.identity();
 	}
 	_idx(x, y) {
 		return (0|y)*(this.width<<2) + (x<<2);
@@ -128,12 +141,15 @@ class Canvas {
 		this.context.fillText(text, x/this.scaling, y/this.scaling);
 	}
 	clear() {
-		for (let i = this.width*this.height; i > 0; --i) {
-			this.zbufferClear[i] = 0;
-			this.imageDataClear[i] = 0;
-		}
-		//this.image.data.fill(0); // Slower.
-		//this.zbuffer.fill(0);
+		//for (let i = this.width*this.height; i > 0; --i) {
+		//	this.zbufferClear[i] = 0;
+		//	this.imageDataClear[i] = 0;
+		//}
+		this.zbufferClear.fill(0);
+		this.imageDataClear.fill(0);
+		//this.context.fillStyle = "#ff00ff";
+		//this.context.fillRect(0, 0, this.width, this.height);
+		//this.image = this.context.getImageData(0, 0, this.width, this.height);
 	}
 	line(x0, y0, x1, y1, rgba) { // Bresenham's line algorithm.
 		const dx =  Math.abs(x1 - x0), sx = Math.sign(x1 - x0);
@@ -152,76 +168,106 @@ class Canvas {
 		canvas.line(x1,y1, x2,y2, rgba);
 		canvas.line(x2,y2, x0,y0, rgba);
 	}
-	_scanLine(y, x, x1, Px, Py, Qx, Qy, uz, w0x, w0y, rgba, depth) {
-		x |= 0; x1 |= 0; // Ensure integer coordinate inputs.
-		if (x > x1) [x, x1] = [x1, x];
-		const data = this.image.data;
-		const zbuffer = this.zbuffer;
-		const Qz = w0y - y;
-		for (let j = y*this.width + x; x <= x1; ++x, ++j) {
-			if (depth > zbuffer[j]) {
-				zbuffer[j] = depth;
-				const Pz = w0x - x;
-				const ux = Py*Qz - Pz*Qy, uy = Pz*Qx - Px*Qz;
-				const bx = 1 - (ux + uy)/uz, by = uy/uz, bz = ux/uz;
-				const i = j << 2;
-				if (!this.debugMode) {
-					data[i  ] = rgba[0];
-					data[i+1] = rgba[1];
-					data[i+2] = rgba[2];
-					data[i+3] = rgba[3];
-				} else if (this.debugMode === "barycentric") {
-					data[i  ] = bx * 255;
-					data[i+1] = by * 255;
-					data[i+2] = bz * 255;
-					data[i+3] = 255;
-				} else if (this.debugMode === "zbuffer") {
-					data[i  ] = Math.pow(depth, 2) * (255/1000000);
-					data[i+1] = Math.pow(depth, 2) * (255/1000000);
-					data[i+2] = Math.pow(depth, 2) * (255/1000000);
-					data[i+3] = 255;
-				}
-			}
-		}
-	}
-	triangle3d(w0, w1, w2, rgba, renderOpts) {
-		//if (w0.y === w1.y && w0.y === w2.y) return; // Degenerate.
+	triangle3d(face, tex) {
+		let w0 = this.transform.apply(face.vertices[0]).round();
+		let w1 = this.transform.apply(face.vertices[1]).round();
+		let w2 = this.transform.apply(face.vertices[2]).round();
+		if (w0.y === w1.y && w0.y === w2.y) return; // Degenerate.
 		const n = Vec3.normal(w0, w1, w2);
-		const li = Vec3.dot(renderOpts.lightDir, n) / n.len();
-		if (this.debugMode === "wireframe") {
-			this.triangle(w0.x,w0.y, w1.x,w1.y, w2.x,w2.y, [255,255,255,li >= 0 ? 255 : 127]);
+		const light = Vec3.dot(this.lightDir, n) / n.len();
+		if (this.renderMode === RenderMode.WIREFRAME) {
+			this.triangle(w0.x,w0.y, w1.x,w1.y, w2.x,w2.y, [255,255,255,light >= 0 ? 255 : 127]);
 			return;
 		}
-		if (li === 0) {
+		if (light === 0) {
 			return;
 		}
-		const rgbaI = [rgba[0]*li, rgba[1]*li, rgba[2]*li, rgba[3]];
 
 		const Px = w2.x - w0.x, Py = w1.x - w0.x;
 		const Qx = w2.y - w0.y, Qy = w1.y - w0.y;
-		const w0x = w0.x, w0y = w0.y;
 		const uz = Px*Qy - Py*Qx;
 		if (uz === 0) {
 			return;
 		}
 
+		const w0x = w0.x, w0y = w0.y;
 		if (w0.y > w1.y) [w0, w1] = [w1, w0];
 		if (w0.y > w2.y) [w0, w2] = [w2, w0];
 		if (w1.y > w2.y) [w1, w2] = [w2, w1];
 		const depth = Math.max(w0.z, w1.z, w2.z);
 
+		const data = this.image.data;
+		const zbuffer = this.zbuffer;
+
+		const t0x = face.texture[0].x, t1x = face.texture[1].x, t2x = face.texture[2].x;
+		const t0y = face.texture[0].y, t1y = face.texture[1].y, t2y = face.texture[2].y;
+
 		const heightAll = w2.y - w0.y;
 		const heightTop = w1.y - w0.y;
-		for (let dy = 0; heightTop && dy <= heightTop; ++dy) {
-			let x0 = w0.x + dy * ((w2.x - w0.x) / heightAll);
-			let x1 = w0.x + dy * ((w1.x - w0.x) / heightTop);
-			this._scanLine(w0.y + dy, x0, x1, Px, Py, Qx, Qy, uz, w0x, w0y, rgbaI, depth);
-		}
 		const heightBot = w2.y - w1.y;
-		for (let dy = 0; heightBot && dy <= heightBot; ++dy) {
-			let x0 = w2.x + dy * ((w0.x - w2.x) / heightAll);
-			let x1 = w2.x + dy * ((w1.x - w2.x) / heightBot);
-			this._scanLine(w2.y - dy, x0, x1, Px, Py, Qx, Qy, uz, w0x, w0y, rgbaI, depth);
+		for (let i = 0; i < heightAll; ++i) {
+			let x = w0.x + i * ((w2.x - w0.x) / heightAll);
+			let y = w0.y + i;
+			let x1;
+			if (i < heightTop) {
+				x1 = w0.x + ((w1.x - w0.x) / heightTop) * i;
+			} else {
+				x1 = w1.x + ((w2.x - w1.x) / heightBot) * (i-heightTop);
+			}
+			x |= 0; x1 |= 0; // Ensure integer coordinate inputs.
+			if (x > x1) [x, x1] = [x1, x];
+
+			const Qz = w0y - y;
+			for (let j = y*this.width + x; x <= x1; ++x, ++j) {
+				if (depth > zbuffer[j]) {
+					zbuffer[j] = depth;
+					const Pz = w0x - x;
+					const ux = Py*Qz - Pz*Qy, uy = Pz*Qx - Px*Qz;
+					const b0 = 1 - (ux + uy)/uz, b1 = uy/uz, b2 = ux/uz;
+					//if (b0 >= 0 && b1 >= 0 && b2 >= 0) {
+						const i = j << 2;
+						if (this.renderMode == RenderMode.FULL) {
+							//const tx = b0*face.texture[0].x + b1*face.texture[1].x + b2*face.texture[2].x;
+							//const ty = b0*face.texture[0].y + b1*face.texture[1].y + b2*face.texture[2].y;
+							const tx = (b0*t0x + b1*t1x + b2*t2x);
+							const ty = (b0*t0y + b1*t1y + b2*t2y);
+
+							const nx = (b0*face.normals[0].x + b1*face.normals[1].x + b2*face.normals[2].x);
+							const ny = (b0*face.normals[0].y + b1*face.normals[1].y + b2*face.normals[2].y);
+							const nz = (b0*face.normals[0].z + b1*face.normals[1].z + b2*face.normals[2].z);
+							const blight = nx*this.lightDir.x + ny*this.lightDir.y - nz*this.lightDir.z;
+
+							const ti = ((1-ty)*1024<<2)*1024 + (tx*1024<<2);
+							data[i  ] = tex.data[ti+0]*blight;
+							data[i+1] = tex.data[ti+1]*blight;
+							data[i+2] = tex.data[ti+2]*blight;
+							data[i+3] = tex.data[ti+3];
+						} else if (this.renderMode === RenderMode.BARYCENTRIC) {
+							data[i  ] = b0 * 255;
+							data[i+1] = b1 * 255;
+							data[i+2] = b2 * 255;
+							data[i+3] = 255;
+						} else if (this.renderMode === RenderMode.ZBUFFER) {
+							data[i  ] = Math.pow(depth, 2) * (255/1000000);
+							data[i+1] = Math.pow(depth, 2) * (255/1000000);
+							data[i+2] = Math.pow(depth, 2) * (255/1000000);
+							data[i+3] = 255;
+						}
+					//}
+				}
+			}
+		}
+	}
+	renderObj(obj, tex) {
+		if (this.renderMode === RenderMode.NONE) {
+			return;
+		}
+		for (const [name, faces] of obj) {
+			const prng = xmur(name);
+			for (const face of faces) {
+				const rgba = [prng(), prng(), prng(), 255];
+				canvas.triangle3d(face, tex, rgba);
+			}
 		}
 	}
 }
@@ -291,6 +337,20 @@ const parseObj = (text) => {
 	});
 	return obj;
 };
+const processObj = (rawObj) => {
+	const obj = new Map();
+	for (const [groupName, groupData] of Object.entries(rawObj.f)) {
+		const faces = groupData.map((rawFace) => {
+			return {
+				vertices: rawFace.map((triplet) => rawObj.v[triplet[0]]),
+				texture:  rawFace.map((triplet) => rawObj.vt[triplet[1]]),
+				normals:  rawFace.map((triplet) => rawObj.vn[triplet[2]]),
+			}
+		});
+		obj.set(groupName, faces);
+	}
+	return obj;
+};
 
 const element = document.getElementById("renderer");
 const canvas = new Canvas(element, 800, 600, 1);
@@ -313,8 +373,8 @@ const animate = (chunk) =>  {
 			const fps = 1000 / avgDT;
 			canvas.debugText(`${fps.toFixed(0).padStart(3)} FPS`);
 			canvas.debugText(`${avgDT.toFixed(3).padStart(6)} ms`);
-			if (canvas.debugMode) {
-				canvas.debugText(`mode: ${canvas.debugMode}`);
+			if (canvas.renderMode !== RenderMode.FULL) {
+				canvas.debugText(`mode: ${canvas.renderMode.toString()}`);
 			}
 		}
 		animating = !input.mouse(0);
@@ -336,54 +396,61 @@ const xmur = (str) => {
 	};
 };
 
-fetch("/head.obj")
+const headObj = fetch("/head.obj")
 .then((value) => value.text())
 .then((text) => parseObj(text))
-.then((obj) => {
+.then((raw) => processObj(raw));
+
+const createOffscreenCanvas = (w, h) => {
+	if (window.OffscreenCanvas) {
+		return new OffscreenCanvas(w, h);
+	}
+	const e = document.createElement("canvas");
+	e.width = w; e.height = h;
+	return e;
+};
+
+const loadImage = (src) => new Promise((resolve) => {
+	const img = new Image();
+	img.onload = (evt) => {
+		const canvas = createOffscreenCanvas(img.width, img.height);
+		const ctx = canvas.getContext("2d");
+		ctx.drawImage(img, 0, 0);
+		resolve(ctx.getImageData(0, 0, img.width, img.height));
+	};
+	img.src = src;
+});
+
+const headTex = loadImage("diffuse.png");
+
+Promise.all([headObj, headTex]).then(([obj, tex]) => {
 	const hw = canvas.width / 2;
 	const hh = canvas.height / 2;
 	const sf = 0.9*Math.min(hh, hw);
 	const ox = hw, oy = hh;
-	const head = obj.f["head"];
-	const renderOpts = {
-		lightDir: new Vec3(0, 0, -1),
-	};
 	animate((t) => {
 		if (input.keyboard("Digit0")) {
-			canvas.debugMode = "empty";
+			canvas.renderMode = RenderMode.NONE;
 		} else if (input.keyboard("Digit1")) {
-			canvas.debugMode = "wireframe";
+			canvas.renderMode = RenderMode.WIREFRAME;
 		} else if (input.keyboard("Digit2")) {
-			canvas.debugMode = "zbuffer";
+			canvas.renderMode = RenderMode.ZBUFFER;
 		} else if (input.keyboard("Digit3")) {
-			canvas.debugMode = "barycentric";
+			canvas.renderMode = RenderMode.BARYCENTRIC;
 		} else if (input.keyboard("Digit4")) {
-			canvas.debugMode = null;
+			canvas.renderMode = RenderMode.FULL;
 		}
 
-		if (canvas.debugMode === "empty") {
-			return;
-		}
+		canvas.lightDir = new Vec3(-Math.sin(t), 0, Math.cos(t));
+		canvas.lightDir.div(canvas.lightDir.len());
 
-		t = Math.PI;
+		t = Math.PI + Math.cos(t/11);
 		const cos = Math.cos(t), sin = Math.sin(t);
-		let transform = new Matrix4x4(
+		canvas.transform = new Matrix4x4(
 			sf*cos , 0      , sf*sin  , ox ,
 			0      , -sf    , 0       , oy ,
 			sf*sin , 0      , -sf*cos , ox ,
-		);
-		const prng = xmur("head");
-		for (let fi = 0; fi < head.length; ++fi) {
-			const f = head[fi];
-			const v0 = obj.v[f[0][0]];
-			const v1 = obj.v[f[1][0]];
-			const v2 = obj.v[f[2][0]];
-
-			const w0 = transform.apply(v0).round();
-			const w1 = transform.apply(v1).round();
-			const w2 = transform.apply(v2).round();
-			const rgba = [prng(), prng(), prng(), 255];
-			canvas.triangle3d(w0, w1, w2, rgba, renderOpts);
-		}
+		)
+		canvas.renderObj(obj, tex);
 	});
 });
