@@ -80,11 +80,12 @@ class Matrix4x4 {
 }
 
 const RenderMode = {
-	NONE: Symbol.for("NONE"),
-	WIREFRAME: Symbol.for("WIREFRAME"),
-	ZBUFFER: Symbol.for("ZBUFFER"),
-	BARYCENTRIC: Symbol.for("BARYCENTRIC"),
-	FULL: Symbol.for("FULL"),
+	NONE: "NONE",
+	WIREFRAME: "WIREFRAME",
+	ZBUFFER: "ZBUFFER",
+	BARYCENTRIC: "BARYCENTRIC",
+	PHONG: "PHONG",
+	FULL: "FULL",
 }
 
 class Canvas {
@@ -141,12 +142,8 @@ class Canvas {
 		this.context.fillText(text, x/this.scaling, y/this.scaling);
 	}
 	clear() {
-		//for (let i = this.width*this.height; i > 0; --i) {
-		//	this.zbufferClear[i] = 0;
-		//	this.imageDataClear[i] = 0;
-		//}
-		this.zbufferClear.fill(0);
-		this.imageDataClear.fill(0);
+		this.zbuffer.fill(0);
+		this.image.data.fill(0);
 		//this.context.fillStyle = "#ff00ff";
 		//this.context.fillRect(0, 0, this.width, this.height);
 		//this.image = this.context.getImageData(0, 0, this.width, this.height);
@@ -173,20 +170,15 @@ class Canvas {
 		let w1 = this.transform.apply(face.vertices[1]).round();
 		let w2 = this.transform.apply(face.vertices[2]).round();
 		if (w0.y === w1.y && w0.y === w2.y) return; // Degenerate.
-		const n = Vec3.normal(w0, w1, w2);
-		const light = Vec3.dot(this.lightDir, n) / n.len();
 		if (this.renderMode === RenderMode.WIREFRAME) {
-			this.triangle(w0.x,w0.y, w1.x,w1.y, w2.x,w2.y, [255,255,255,light >= 0 ? 255 : 127]);
-			return;
-		}
-		if (light === 0) {
+			this.triangle(w0.x,w0.y, w1.x,w1.y, w2.x,w2.y, [255,255,255,255]);
 			return;
 		}
 
 		const Px = w2.x - w0.x, Py = w1.x - w0.x;
 		const Qx = w2.y - w0.y, Qy = w1.y - w0.y;
 		const uz = Px*Qy - Py*Qx;
-		if (uz === 0) {
+		if (uz >= 0) {
 			return;
 		}
 
@@ -199,8 +191,12 @@ class Canvas {
 		const data = this.image.data;
 		const zbuffer = this.zbuffer;
 
+		const lx = this.lightDir.x, ly = this.lightDir.y, lz = this.lightDir.z;
 		const t0x = face.texture[0].x, t1x = face.texture[1].x, t2x = face.texture[2].x;
 		const t0y = face.texture[0].y, t1y = face.texture[1].y, t2y = face.texture[2].y;
+		const n0x = face.normals[0].x, n1x = face.normals[1].x, n2x = face.normals[2].x;
+		const n0y = face.normals[0].y, n1y = face.normals[1].y, n2y = face.normals[2].y;
+		const n0z = face.normals[0].z, n1z = face.normals[1].z, n2z = face.normals[2].z;
 
 		const heightAll = w2.y - w0.y;
 		const heightTop = w1.y - w0.y;
@@ -220,28 +216,33 @@ class Canvas {
 			const Qz = w0y - y;
 			for (let j = y*this.width + x; x <= x1; ++x, ++j) {
 				if (depth > zbuffer[j]) {
-					zbuffer[j] = depth;
 					const Pz = w0x - x;
 					const ux = Py*Qz - Pz*Qy, uy = Pz*Qx - Px*Qz;
 					const b0 = 1 - (ux + uy)/uz, b1 = uy/uz, b2 = ux/uz;
-					//if (b0 >= 0 && b1 >= 0 && b2 >= 0) {
+					if (b0 >= 0 && b1 >= 0 && b2 >= 0) {
+						zbuffer[j] = depth;
 						const i = j << 2;
 						if (this.renderMode == RenderMode.FULL) {
-							//const tx = b0*face.texture[0].x + b1*face.texture[1].x + b2*face.texture[2].x;
-							//const ty = b0*face.texture[0].y + b1*face.texture[1].y + b2*face.texture[2].y;
+							const nx = (b0*n0x + b1*n1x + b2*n2x);
+							const ny = (b0*n0y + b1*n1y + b2*n2y);
+							const nz = (b0*n0z + b1*n1z + b2*n2z);
+							const intensity = nx*lx + ny*ly - nz*lz;
 							const tx = (b0*t0x + b1*t1x + b2*t2x);
 							const ty = (b0*t0y + b1*t1y + b2*t2y);
-
-							const nx = (b0*face.normals[0].x + b1*face.normals[1].x + b2*face.normals[2].x);
-							const ny = (b0*face.normals[0].y + b1*face.normals[1].y + b2*face.normals[2].y);
-							const nz = (b0*face.normals[0].z + b1*face.normals[1].z + b2*face.normals[2].z);
-							const blight = nx*this.lightDir.x + ny*this.lightDir.y - nz*this.lightDir.z;
-
 							const ti = ((1-ty)*1024<<2)*1024 + (tx*1024<<2);
-							data[i  ] = tex.data[ti+0]*blight;
-							data[i+1] = tex.data[ti+1]*blight;
-							data[i+2] = tex.data[ti+2]*blight;
-							data[i+3] = tex.data[ti+3];
+							data[i  ] = tex.data[ti+0]*intensity;
+							data[i+1] = tex.data[ti+1]*intensity;
+							data[i+2] = tex.data[ti+2]*intensity;
+							data[i+3] = 255;
+						} else if (this.renderMode === RenderMode.PHONG) {
+							const nx = (b0*n0x + b1*n1x + b2*n2x);
+							const ny = (b0*n0y + b1*n1y + b2*n2y);
+							const nz = (b0*n0z + b1*n1z + b2*n2z);
+							const intensity = nx*lx + ny*ly - nz*lz;
+							data[i  ] = 255*intensity;
+							data[i+1] = 255*intensity;
+							data[i+2] = 255*intensity;
+							data[i+3] = 255;
 						} else if (this.renderMode === RenderMode.BARYCENTRIC) {
 							data[i  ] = b0 * 255;
 							data[i+1] = b1 * 255;
@@ -253,7 +254,7 @@ class Canvas {
 							data[i+2] = Math.pow(depth, 2) * (255/1000000);
 							data[i+3] = 255;
 						}
-					//}
+					}
 				}
 			}
 		}
@@ -262,11 +263,9 @@ class Canvas {
 		if (this.renderMode === RenderMode.NONE) {
 			return;
 		}
-		for (const [name, faces] of obj) {
-			const prng = xmur(name);
+		for (const [_, faces] of obj) {
 			for (const face of faces) {
-				const rgba = [prng(), prng(), prng(), 255];
-				canvas.triangle3d(face, tex, rgba);
+				canvas.triangle3d(face, tex);
 			}
 		}
 	}
@@ -438,6 +437,8 @@ Promise.all([headObj, headTex]).then(([obj, tex]) => {
 		} else if (input.keyboard("Digit3")) {
 			canvas.renderMode = RenderMode.BARYCENTRIC;
 		} else if (input.keyboard("Digit4")) {
+			canvas.renderMode = RenderMode.PHONG;
+		} else if (input.keyboard("Digit5")) {
 			canvas.renderMode = RenderMode.FULL;
 		}
 
