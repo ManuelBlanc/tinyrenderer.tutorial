@@ -6,6 +6,9 @@ class Vec3 {
 	constructor(x, y, z) {
 		this.x=x; this.y=y; this.z=z;
 	}
+	toString() {
+		return `Vec3(${this.x}, ${this.y}, ${this.z})`;
+	}
 	valid() {
 		return !(isNaN(this.x) || isNaN(this.y) || isNaN(this.z));
 	}
@@ -41,8 +44,8 @@ class Vec3 {
 	}
 	barycentric(pts) {
 		const u = Vec3.cross(
-			[ pts[2].x-pts[0].x, pts[1].x-pts[0].x, pts[0].x-this.x ],
-			[ pts[2].y-pts[0].y, pts[1].y-pts[0].y, pts[0].y-this.y ],
+			new Vec3(pts[2].x-pts[0].x, pts[1].x-pts[0].x, pts[0].x-this.x),
+			new Vec3(pts[2].y-pts[0].y, pts[1].y-pts[0].y, pts[0].y-this.y),
 		);
 		if (Math.abs(u.z < 1)) return new Vec3(-1, 1, 1);
 		return new Vec3(1 - (u.x+u.y)/u.z, u.y/u.z, u.x/u.z);
@@ -79,11 +82,48 @@ class Matrix4x4 {
 	}
 }
 
+class InputHandler {
+	constructor(element) {
+		element.setAttribute("tabindex", "1");
+		element.focus();
+		this.mouseState = [];
+		this.cursor = new Vec3(0, 0, 0);
+		element.addEventListener("mousedown", (evt) => {
+			this.mouseState[evt.button] = true;
+		});
+		element.addEventListener("mouseup", (evt) => {
+			this.mouseState[evt.button] = false;
+		});
+		element.addEventListener("mousemove", (evt) => {
+			this.cursor.x = evt.offsetX;
+			this.cursor.y = evt.offsetY;
+		})
+		element.addEventListener("contextmenu", (evt) => {
+			evt.preventDefault();
+		});
+		this.keyboardState = {};
+		element.addEventListener("keydown", (evt) => {
+			this.keyboardState[evt.code] = true;
+		});
+		element.addEventListener("keyup", (evt) => {
+			this.keyboardState[evt.code] = false;
+		});
+	}
+	mouse(key) {
+		return !!this.mouseState[key];
+	}
+	keyboard(key) {
+		return !!this.keyboardState[key];
+	}
+}
+
 const RenderMode = {
 	NONE: "NONE",
 	WIREFRAME: "WIREFRAME",
 	ZBUFFER: "ZBUFFER",
 	BARYCENTRIC: "BARYCENTRIC",
+	NORMALS: "NORMALS",
+	TEXTURE: "TEXTURE",
 	PHONG: "PHONG",
 	FULL: "FULL",
 }
@@ -107,6 +147,7 @@ class Canvas {
 		this.zbufferClear = new Uint32Array(this.zbuffer.buffer);
 		this.lightDir = new Vec3(0, 0, -1);
 		this.transform = Matrix4x4.identity();
+		this.input = new InputHandler(element);
 	}
 	_idx(x, y) {
 		return (0|y)*(this.width<<2) + (x<<2);
@@ -142,8 +183,16 @@ class Canvas {
 		this.context.fillText(text, x/this.scaling, y/this.scaling);
 	}
 	clear() {
-		this.zbuffer.fill(0);
-		this.image.data.fill(0);
+		// Faster than fill on Firefox & Safari.
+		// Only slightly slower on Chrome.
+		for (let i = 0; i < this.imageDataClear.length; ++i) {
+			this.imageDataClear[i] = 0;
+			this.zbufferClear[i] = 0;
+		}
+		//this.zbuffer.fill(0);
+		//this.image.data.fill(0);
+
+		// Debug magenta fill to find holes:
 		//this.context.fillStyle = "#ff00ff";
 		//this.context.fillRect(0, 0, this.width, this.height);
 		//this.image = this.context.getImageData(0, 0, this.width, this.height);
@@ -170,14 +219,15 @@ class Canvas {
 		let w1 = this.transform.apply(face.vertices[1]).round();
 		let w2 = this.transform.apply(face.vertices[2]).round();
 		if (w0.y === w1.y && w0.y === w2.y) return; // Degenerate.
-		if (this.renderMode === RenderMode.WIREFRAME) {
-			this.triangle(w0.x,w0.y, w1.x,w1.y, w2.x,w2.y, [255,255,255,255]);
-			return;
-		}
 
 		const Px = w2.x - w0.x, Py = w1.x - w0.x;
 		const Qx = w2.y - w0.y, Qy = w1.y - w0.y;
 		const uz = Px*Qy - Py*Qx;
+		if (this.renderMode === RenderMode.WIREFRAME) {
+			const v = uz < 0 ? 255 : 127;
+			this.triangle(w0.x,w0.y, w1.x,w1.y, w2.x,w2.y, [255,255,255,v]);
+			return;
+		}
 		if (uz >= 0) {
 			return;
 		}
@@ -201,17 +251,18 @@ class Canvas {
 		const heightAll = w2.y - w0.y;
 		const heightTop = w1.y - w0.y;
 		const heightBot = w2.y - w1.y;
-		for (let i = 0; i < heightAll; ++i) {
-			let x = w0.x + i * ((w2.x - w0.x) / heightAll);
-			let y = w0.y + i;
+		for (let dy = 0; dy < heightAll; ++dy) {
+			let x = w0.x + dy * ((w2.x - w0.x) / heightAll);
+			let y = w0.y + dy;
 			let x1;
-			if (i < heightTop) {
-				x1 = w0.x + ((w1.x - w0.x) / heightTop) * i;
+			if (dy < heightTop) {
+				x1 = w0.x + ((w1.x - w0.x) / heightTop) * dy;
 			} else {
-				x1 = w1.x + ((w2.x - w1.x) / heightBot) * (i-heightTop);
+				x1 = w1.x + ((w2.x - w1.x) / heightBot) * (dy-heightTop);
 			}
-			x |= 0; x1 |= 0; // Ensure integer coordinate inputs.
 			if (x > x1) [x, x1] = [x1, x];
+			x = Math.ceil(x);
+			x1 = Math.floor(x1);
 
 			const Qz = w0y - y;
 			for (let j = y*this.width + x; x <= x1; ++x, ++j) {
@@ -243,6 +294,21 @@ class Canvas {
 							data[i+1] = 255*intensity;
 							data[i+2] = 255*intensity;
 							data[i+3] = 255;
+						} else if (this.renderMode == RenderMode.TEXTURE) {
+							const tx = (b0*t0x + b1*t1x + b2*t2x);
+							const ty = (b0*t0y + b1*t1y + b2*t2y);
+							data[i  ] = 255*tx;
+							data[i+1] = 255*ty;
+							data[i+2] = 255*(1 - tx);
+							data[i+3] = 255;
+						} else if (this.renderMode === RenderMode.NORMALS) {
+							const nx = (b0*n0x + b1*n1x + b2*n2x);
+							const ny = (b0*n0y + b1*n1y + b2*n2y);
+							const nz = (b0*n0z + b1*n1z + b2*n2z);
+							data[i  ] = 255*(1+0.5*nx);
+							data[i+1] = 255*(1+0.5*ny);
+							data[i+2] = 255*(1+0.5*nz);
+							data[i+3] = 255;
 						} else if (this.renderMode === RenderMode.BARYCENTRIC) {
 							data[i  ] = b0 * 255;
 							data[i+1] = b1 * 255;
@@ -258,6 +324,11 @@ class Canvas {
 				}
 			}
 		}
+
+		//const bc = this.input.cursor.barycentric([w0, w1, w2]);
+		//if (bc.x >= 0 && bc.y >= 0 && bc.z >= 0) {
+		//	this.triangle(w0.x,w0.y, w1.x,w1.y, w2.x,w2.y, [0,255,0,255]);
+		//}
 	}
 	renderObj(obj, tex) {
 		if (this.renderMode === RenderMode.NONE) {
@@ -268,35 +339,6 @@ class Canvas {
 				canvas.triangle3d(face, tex);
 			}
 		}
-	}
-}
-class InputHandler {
-	constructor(element) {
-		element.setAttribute("tabindex", "1");
-		element.focus();
-		this.mouseState = [];
-		element.addEventListener("mousedown", (evt) => {
-			this.mouseState[evt.button] = true;
-		});
-		element.addEventListener("mouseup", (evt) => {
-			this.mouseState[evt.button] = false;
-		});
-		element.addEventListener("contextmenu", (evt) => {
-			evt.preventDefault();
-		});
-		this.keyboardState = {};
-		element.addEventListener("keydown", (evt) => {
-			this.keyboardState[evt.code] = true;
-		});
-		element.addEventListener("keyup", (evt) => {
-			this.keyboardState[evt.code] = false;
-		});
-	}
-	mouse(key) {
-		return !!this.mouseState[key];
-	}
-	keyboard(key) {
-		return !!this.keyboardState[key];
 	}
 }
 
@@ -331,7 +373,7 @@ const parseObj = (text) => {
 			case "s": // Smoothing group.
 				break; // Ignored.
 			default:
-				throw new Error(`Unsupported or invalid command: '${command ?? ""}' at line ${lineNumber}`);
+				throw new Error(`Unsupported or invalid command: '${command || ""}' at line ${lineNumber}`);
 		}
 	});
 	return obj;
@@ -353,7 +395,6 @@ const processObj = (rawObj) => {
 
 const element = document.getElementById("renderer");
 const canvas = new Canvas(element, 800, 600, 1);
-const input = new InputHandler(element);
 
 const animate = (chunk) =>  {
 	let lastT = performance.now();
@@ -376,7 +417,7 @@ const animate = (chunk) =>  {
 				canvas.debugText(`mode: ${canvas.renderMode.toString()}`);
 			}
 		}
-		animating = !input.mouse(0);
+		animating = !canvas.input.keyboard("Space");
 		lastT = newT;
 		requestAnimationFrame(tick);
 	})();
@@ -427,26 +468,36 @@ Promise.all([headObj, headTex]).then(([obj, tex]) => {
 	const hh = canvas.height / 2;
 	const sf = 0.9*Math.min(hh, hw);
 	const ox = hw, oy = hh;
+	let isRotating = true;
 	animate((t) => {
-		if (input.keyboard("Digit0")) {
+		if (canvas.input.keyboard("Digit0")) {
 			canvas.renderMode = RenderMode.NONE;
-		} else if (input.keyboard("Digit1")) {
+		} else if (canvas.input.keyboard("Digit1")) {
 			canvas.renderMode = RenderMode.WIREFRAME;
-		} else if (input.keyboard("Digit2")) {
+		} else if (canvas.input.keyboard("Digit2")) {
 			canvas.renderMode = RenderMode.ZBUFFER;
-		} else if (input.keyboard("Digit3")) {
+		} else if (canvas.input.keyboard("Digit3")) {
 			canvas.renderMode = RenderMode.BARYCENTRIC;
-		} else if (input.keyboard("Digit4")) {
+		} else if (canvas.input.keyboard("Digit4")) {
+			canvas.renderMode = RenderMode.NORMALS;
+		} else if (canvas.input.keyboard("Digit5")) {
+			canvas.renderMode = RenderMode.TEXTURE;
+		} else if (canvas.input.keyboard("Digit6")) {
 			canvas.renderMode = RenderMode.PHONG;
-		} else if (input.keyboard("Digit5")) {
+		} else if (canvas.input.keyboard("Digit7")) {
 			canvas.renderMode = RenderMode.FULL;
 		}
 
-		canvas.lightDir = new Vec3(-Math.sin(t), 0, Math.cos(t));
+		if (canvas.input.keyboard("KeyF")) {
+			isRotating = false;
+		}
+
+		const lightAng = isRotating ? t : 0;
+		canvas.lightDir = new Vec3(Math.sin(lightAng), 0, -Math.cos(lightAng));
 		canvas.lightDir.div(canvas.lightDir.len());
 
-		t = Math.PI + Math.cos(t/11);
-		const cos = Math.cos(t), sin = Math.sin(t);
+		const headAng = Math.PI + (isRotating ? Math.cos(t/11) : 0);
+		const cos = Math.cos(headAng), sin = Math.sin(headAng);
 		canvas.transform = new Matrix4x4(
 			sf*cos , 0      , sf*sin  , ox ,
 			0      , -sf    , 0       , oy ,
