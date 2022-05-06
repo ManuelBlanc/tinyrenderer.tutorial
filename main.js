@@ -142,7 +142,8 @@ class Canvas {
 		this.element.style.backgroundColor = "black";
 		this.zbuffer = new Float32Array(this.width*this.height);
 		this.renderMode = RenderMode.FULL;
-		this.debugTextPos = 0;
+		this.fontSize = 22;
+		this.debugTexts = [];
 		this.imageDataClear = new Uint32Array(this.image.data.buffer);
 		this.zbufferClear = new Uint32Array(this.zbuffer.buffer);
 		this.lightDir = new Vec3(0, 0, -1);
@@ -159,7 +160,7 @@ class Canvas {
 		data[i+1] = rgba[1];
 		data[i+2] = rgba[2];
 		data[i+3] = rgba[3];
-		//data.set(rgba, i); // Slower.
+		//data.set(rgba, i); // Slower on Chrome/Firefox/Safari.
 	}
 	get(x, y) {
 		const i = this._idx(x, y);
@@ -173,14 +174,27 @@ class Canvas {
 	}
 	present() {
 		this.context.putImageData(this.image, 0, 0);
-		this.debugTextPos = 0;
+
+		if (this.debugTexts.length > 0) {
+			this.context.fillStyle = "#00ff00";
+			this.context.font = `${this.fontSize/this.scaling}px monospace`;
+			for (let i=0; i < this.debugTexts.length; ++i) {
+				const x = 10, y = 5 + (1+i)*this.fontSize;
+				const text = this.debugTexts[i];
+				this.context.fillText(text, x/this.scaling, y/this.scaling);
+			}
+			this.debugTexts.length = 0;
+		}
 	}
 	debugText(text) {
-		this.context.fillStyle = "#00ff00";
-		const fontSize = 22;
-		this.context.font = `${fontSize/this.scaling}px monospace`;
-		const x = 10, y = 5 + (this.debugTextPos += fontSize);
-		this.context.fillText(text, x/this.scaling, y/this.scaling);
+		this.debugTexts.push(text);
+	}
+	showError(error) {
+		this.present(); // Show partial buffer.
+		this.context.fillStyle = "#ff0000";
+		this.context.font = `${this.fontSize/this.scaling}px monospace`;
+		const x = 10, y = 5 + this.fontSize;
+		this.context.fillText(error.toString(), x/this.scaling, y/this.scaling);
 	}
 	clear() {
 		// Faster than fill on Firefox & Safari.
@@ -214,7 +228,7 @@ class Canvas {
 		canvas.line(x1,y1, x2,y2, rgba);
 		canvas.line(x2,y2, x0,y0, rgba);
 	}
-	triangle3d(face, tex) {
+	triangle3d(face, tex, percent, rng) {
 		let w0 = this.transform.apply(face.vertices[0]).round();
 		let w1 = this.transform.apply(face.vertices[1]).round();
 		let w2 = this.transform.apply(face.vertices[2]).round();
@@ -224,8 +238,8 @@ class Canvas {
 		const Qx = w2.y - w0.y, Qy = w1.y - w0.y;
 		const uz = Px*Qy - Py*Qx;
 		if (this.renderMode === RenderMode.WIREFRAME) {
-			const v = uz < 0 ? 255 : 127;
-			this.triangle(w0.x,w0.y, w1.x,w1.y, w2.x,w2.y, [255,255,255,v]);
+			const a = uz < 0 ? 255 : 127;
+			this.triangle(w0.x,w0.y, w1.x,w1.y, w2.x,w2.y, [255*percent,255*(1-percent),0,a]);
 			return;
 		}
 		if (uz >= 0) {
@@ -273,83 +287,72 @@ class Canvas {
 					if (b0 >= 0 && b1 >= 0 && b2 >= 0) {
 						zbuffer[j] = depth;
 						const i = j << 2;
+						const nx = (b0*n0x + b1*n1x + b2*n2x);
+						const ny = (b0*n0y + b1*n1y + b2*n2y);
+						const nz = (b0*n0z + b1*n1z + b2*n2z);
+						const intensity = nx*lx + ny*ly - nz*lz;
+						const tx = (b0*t0x + b1*t1x + b2*t2x);
+						const ty = (b0*t0y + b1*t1y + b2*t2y);
+						const ti = ((1-ty)*1024<<2)*1024 + (tx*1024<<2);
 						if (this.renderMode == RenderMode.FULL) {
-							const nx = (b0*n0x + b1*n1x + b2*n2x);
-							const ny = (b0*n0y + b1*n1y + b2*n2y);
-							const nz = (b0*n0z + b1*n1z + b2*n2z);
-							const intensity = nx*lx + ny*ly - nz*lz;
-							const tx = (b0*t0x + b1*t1x + b2*t2x);
-							const ty = (b0*t0y + b1*t1y + b2*t2y);
-							const ti = ((1-ty)*1024<<2)*1024 + (tx*1024<<2);
 							data[i  ] = tex.data[ti+0]*intensity;
 							data[i+1] = tex.data[ti+1]*intensity;
 							data[i+2] = tex.data[ti+2]*intensity;
-							data[i+3] = 255;
 						} else if (this.renderMode === RenderMode.PHONG) {
-							const nx = (b0*n0x + b1*n1x + b2*n2x);
-							const ny = (b0*n0y + b1*n1y + b2*n2y);
-							const nz = (b0*n0z + b1*n1z + b2*n2z);
-							const intensity = nx*lx + ny*ly - nz*lz;
 							data[i  ] = 255*intensity;
 							data[i+1] = 255*intensity;
 							data[i+2] = 255*intensity;
-							data[i+3] = 255;
 						} else if (this.renderMode == RenderMode.TEXTURE) {
-							const tx = (b0*t0x + b1*t1x + b2*t2x);
-							const ty = (b0*t0y + b1*t1y + b2*t2y);
 							data[i  ] = 255*tx;
 							data[i+1] = 255*ty;
 							data[i+2] = 255*(1 - tx);
-							data[i+3] = 255;
 						} else if (this.renderMode === RenderMode.NORMALS) {
-							const nx = (b0*n0x + b1*n1x + b2*n2x);
-							const ny = (b0*n0y + b1*n1y + b2*n2y);
-							const nz = (b0*n0z + b1*n1z + b2*n2z);
-							data[i  ] = 255*(1+0.5*nx);
-							data[i+1] = 255*(1+0.5*ny);
-							data[i+2] = 255*(1+0.5*nz);
-							data[i+3] = 255;
+							data[i  ] = 255*Math.sqrt(Math.abs(nx));
+							data[i+1] = 255*Math.sqrt(Math.abs(ny));
+							data[i+2] = 255*Math.sqrt(Math.abs(nz));
 						} else if (this.renderMode === RenderMode.BARYCENTRIC) {
-							data[i  ] = b0 * 255;
-							data[i+1] = b1 * 255;
-							data[i+2] = b2 * 255;
-							data[i+3] = 255;
+							data[i  ] = 255*b0*b0*b0;
+							data[i+1] = 255*b1*b1*b1;
+							data[i+2] = 255*b2*b2*b2;
 						} else if (this.renderMode === RenderMode.ZBUFFER) {
-							data[i  ] = Math.pow(depth, 2) * (255/1000000);
-							data[i+1] = Math.pow(depth, 2) * (255/1000000);
-							data[i+2] = Math.pow(depth, 2) * (255/1000000);
-							data[i+3] = 255;
+							const gray = Math.pow(depth, 2) * (255/1000000)
+							data[i  ] = gray;
+							data[i+1] = gray;
+							data[i+2] = gray;
 						}
+						data[i+3] = 255;
 					}
+				} else if (this.renderMode === RenderMode.ZBUFFER) {
+					zbuffer[j] = Number.POSITIVE_INFINITY;
+					const i = j << 2;
+					data[i  ] = data[i+1];
+					data[i+1] = data[i+2];
+					data[i+2] = data[i+3];
 				}
 			}
 		}
-
-		//const bc = this.input.cursor.barycentric([w0, w1, w2]);
-		//if (bc.x >= 0 && bc.y >= 0 && bc.z >= 0) {
-		//	this.triangle(w0.x,w0.y, w1.x,w1.y, w2.x,w2.y, [0,255,0,255]);
-		//}
 	}
-	renderObj(obj, tex) {
+	renderObj(obj, tex, rnggen) {
 		if (this.renderMode === RenderMode.NONE) {
 			return;
 		}
-		for (const [_, faces] of obj) {
-			for (const face of faces) {
-				canvas.triangle3d(face, tex);
+		for (const [group, faces] of obj) {
+			const rng = rnggen(group);
+			for (const [i, face] of faces.entries()) {
+				canvas.triangle3d(face, tex, i/faces.length, rng);
 			}
 		}
 	}
 }
 
 const parseObj = (text) => {
-	const obj = { v: [], vt: [], vn: [], f: {} };
-	let group = undefined;
-	text.split('\n').forEach((line, lineNumber) => {
+	const obj = { v: [], vt: [], vn: [], f: new Map() };
+	let group;
+	text.split("\n").forEach((line, lineNumber) => {
 		line = line.replace(/#.*$/, ""); // Comments.
 		if (line.length === 0) return;
 		const entry = line.trim().split(/\s+/);
-		const command = entry.shift()
+		const command = entry.shift();
 		switch (command) {
 			case "v": // Geometric vertices.
 			case "vn": // Vertex normals.
@@ -357,17 +360,17 @@ const parseObj = (text) => {
 				obj[command].push(new Vec3(...entry.map((f) => parseFloat(f))));
 				break;
 			case "f": // Face.
-				obj.f[group].push(entry.map((t) => {
+				group.push(entry.map((t) => {
 					return t.split("/").map((i) => parseInt(i, 10) - 1);
 				}));
 				break;
 			case "g": // Group name.
-				group = entry.shift();
-				if (!group) {
+				const groupName = entry.shift();
+				if (!groupName) {
 					throw new Error(`Missing group name at line ${lineNumber}`);
 				}
-				if (!obj.f[group]) {
-					obj.f[group] = [];
+				if (!obj.f.has(groupName)) {
+					obj.f.set(groupName, group = []);
 				}
 				break;
 			case "s": // Smoothing group.
@@ -376,11 +379,13 @@ const parseObj = (text) => {
 				throw new Error(`Unsupported or invalid command: '${command || ""}' at line ${lineNumber}`);
 		}
 	});
+	const faces = [...obj.f.values()].reduce((total, list) => total + list.length, 0);
+	console.log(`Vertices: ${obj.v.length} // Triangles: ${faces}`)
 	return obj;
 };
-const processObj = (rawObj) => {
+const bakeObj = (rawObj) => {
 	const obj = new Map();
-	for (const [groupName, groupData] of Object.entries(rawObj.f)) {
+	for (const [groupName, groupData] of rawObj.f.entries()) {
 		const faces = groupData.map((rawFace) => {
 			return {
 				vertices: rawFace.map((triplet) => rawObj.v[triplet[0]]),
@@ -396,31 +401,22 @@ const processObj = (rawObj) => {
 const element = document.getElementById("renderer");
 const canvas = new Canvas(element, 800, 600, 1);
 
-const animate = (chunk) =>  {
-	let lastT = performance.now();
-	let t = 0;
-	let avgDT = 0;
-	let animating = false;
-	(function tick() {
-		const newT = performance.now();
-		if (animating) {
-			const dt = newT - lastT
-			t += dt;
-			canvas.clear();
-			chunk(t/1000);
-			avgDT = avgDT * 0.9 + 0.1 * (performance.now() - newT);
-			canvas.present();
-			const fps = 1000 / avgDT;
-			canvas.debugText(`${fps.toFixed(0).padStart(3)} FPS`);
-			canvas.debugText(`${avgDT.toFixed(3).padStart(6)} ms`);
-			if (canvas.renderMode !== RenderMode.FULL) {
-				canvas.debugText(`mode: ${canvas.renderMode.toString()}`);
+const animate = (chunk) => {
+	return new Promise((_, reject) => {
+		let dt = 1000/60;
+		requestAnimationFrame(function tick() {
+			try {
+				const t = performance.now();
+				canvas.clear();
+				chunk(t/1000, dt);
+				canvas.present();
+				requestAnimationFrame(tick);
+				dt = performance.now() - t;
+			} catch (err) {
+				reject(err);
 			}
-		}
-		animating = !canvas.input.keyboard("Space");
-		lastT = newT;
-		requestAnimationFrame(tick);
-	})();
+		});
+	});
 };
 
 const xmur = (str) => {
@@ -436,11 +432,6 @@ const xmur = (str) => {
 	};
 };
 
-const headObj = fetch("/head.obj")
-.then((value) => value.text())
-.then((text) => parseObj(text))
-.then((raw) => processObj(raw));
-
 const createOffscreenCanvas = (w, h) => {
 	if (window.OffscreenCanvas) {
 		return new OffscreenCanvas(w, h);
@@ -450,7 +441,20 @@ const createOffscreenCanvas = (w, h) => {
 	return e;
 };
 
-const loadImage = (src) => new Promise((resolve) => {
+const loadObj = (src) => {
+	return fetch(src)
+		.then((body) => {
+			if (body.ok) {
+				return body.text()
+			} else {
+				throw new Error(`${body.statusText}: ${src}`);
+			}
+		})
+		.then((text) => parseObj(text))
+		.then((raw) => bakeObj(raw));
+}
+
+const loadImage = (src) => new Promise((resolve, reject) => {
 	const img = new Image();
 	img.onload = (evt) => {
 		const canvas = createOffscreenCanvas(img.width, img.height);
@@ -458,9 +462,13 @@ const loadImage = (src) => new Promise((resolve) => {
 		ctx.drawImage(img, 0, 0);
 		resolve(ctx.getImageData(0, 0, img.width, img.height));
 	};
+	img.onerror = (evt) => {
+		reject(new Error(`File not found: ${src}`));
+	};
 	img.src = src;
 });
 
+const headObj = loadObj("head.obj")
 const headTex = loadImage("diffuse.png");
 
 Promise.all([headObj, headTex]).then(([obj, tex]) => {
@@ -469,7 +477,23 @@ Promise.all([headObj, headTex]).then(([obj, tex]) => {
 	const sf = 0.9*Math.min(hh, hw);
 	const ox = hw, oy = hh;
 	let isRotating = true;
-	animate((t) => {
+	let avgDT = 0;
+	const dts = new Array(120).fill(0);
+	return animate((t, dt) => {
+		const fps = 1000 / avgDT;
+		avgDT = 0.9*avgDT + 0.1*dt;
+		dts.pop();
+		dts.unshift(dt);
+		for (let i=0; i < dts.length; ++i) {
+			const dt = dts[i]/1000;
+			const v = Math.max(0, Math.min(1, (dt-1/60)/(1/30-1/60)));
+			let j = Math.floor(1000*dt);
+			while (j --> 0) canvas.set(canvas.width-10-i, 10+j, [255*v,255*(1-v),255-255/30*j,255]);
+		}
+
+		canvas.debugText(`${fps.toFixed(0).padStart(3)} FPS`);
+		canvas.debugText(`${avgDT.toFixed(3).padStart(6)} ms`);
+
 		if (canvas.input.keyboard("Digit0")) {
 			canvas.renderMode = RenderMode.NONE;
 		} else if (canvas.input.keyboard("Digit1")) {
@@ -488,6 +512,10 @@ Promise.all([headObj, headTex]).then(([obj, tex]) => {
 			canvas.renderMode = RenderMode.FULL;
 		}
 
+		if (canvas.renderMode !== RenderMode.FULL) {
+			canvas.debugText(`mode: ${canvas.renderMode.toString()}`);
+		}
+
 		if (canvas.input.keyboard("KeyF")) {
 			isRotating = false;
 		}
@@ -503,6 +531,8 @@ Promise.all([headObj, headTex]).then(([obj, tex]) => {
 			0      , -sf    , 0       , oy ,
 			sf*sin , 0      , -sf*cos , ox ,
 		)
-		canvas.renderObj(obj, tex);
+		canvas.renderObj(obj, tex, xmur);
 	});
+}).catch((err) => {
+	canvas.showError(err);
 });
